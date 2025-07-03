@@ -25,6 +25,17 @@ ln -s /path/to/cbplay/cbplay.py ~/bin/cbplay
 2. Run `cbplay`
 3. Listen as it reads the text in chunks
 
+### Voice Options
+
+Use `-v` or `--voice` to select a different voice:
+
+```bash
+cbplay -v alloy
+cbplay --voice nova
+```
+
+Available voices: `alloy`, `ash` (default), `ballad`, `coral`, `echo`, `fable`, `nova`, `onyx`, `sage`, `shimmer`, `verse`
+
 ## Controls
 
 - **Up/Down arrows**: Navigate between chunks

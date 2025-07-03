@@ -20,6 +20,7 @@ import termios
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 import json
+import argparse
 
 DEBUG = os.getenv('DEBUG') == '1'
 
@@ -52,7 +53,7 @@ class RateLimiter:
             self.request_times.append(now)
 
 class TTSFile:
-    def __init__(self, voice="echo", response_format="aac", file_prefix="tts_clipboard"):
+    def __init__(self, voice="ash", response_format="aac", file_prefix="tts_clipboard"):
         self.timeout = 240
         self.voice = voice
         self.response_format = response_format
@@ -116,7 +117,9 @@ class TTSFile:
         }
 
     def _hash_text(self, text):
-        return hashlib.sha256(text.encode()).hexdigest()
+        # Include voice in hash so different voices get different cache entries
+        content = f"{self.voice}:{text}"
+        return hashlib.sha256(content.encode()).hexdigest()
 
     def to_file(self, text, out_file):
         text_hash = self._hash_text(text)
@@ -171,7 +174,8 @@ class TTSFile:
         shutil.copy2(out_file, cached_file)
         self.cache_index[text_hash] = {
             'timestamp': time.time(),
-            'text_preview': text[:50]
+            'text_preview': text[:50],
+            'voice': self.voice
         }
         self._save_cache_index()
         
@@ -550,6 +554,15 @@ def graceful_exit(signal_received, frame):
     exit(0)
 
 def main():
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='cbplay - Text-to-speech for clipboard content')
+    parser.add_argument('-v', '--voice', 
+                        choices=['alloy', 'ash', 'ballad', 'coral', 'echo', 'fable', 
+                                 'nova', 'onyx', 'sage', 'shimmer', 'verse'],
+                        default='ash',
+                        help='Voice to use for text-to-speech (default: ash)')
+    args = parser.parse_args()
+    
     signal.signal(signal.SIGINT, graceful_exit)
 
     openai.api_key = os.getenv('OPENAI_API_KEY')
@@ -557,6 +570,7 @@ def main():
         raise ValueError("OPENAI_API_KEY is not set in environment variables.")
 
     debug_print("Starting script...")
+    debug_print(f"Using voice: {args.voice}")
     
     print("Reading clipboard content...")
     clipboard_content = get_clipboard_content()
@@ -567,7 +581,7 @@ def main():
     
     print(f"Processing {len(clipboard_content)} characters...")
     
-    tts = TTSFile()
+    tts = TTSFile(voice=args.voice)
     combined_texts = split_text_intelligently(clipboard_content)
     audio_queue = queue.Queue()
     status_queue = queue.Queue()
