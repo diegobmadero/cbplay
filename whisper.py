@@ -491,11 +491,36 @@ def play_audio_files_with_status(audio_queue, status_queue, tts):
                 
                 # Only auto-advance if user didn't interrupt
                 if not user_interrupted:
-                    # Audio finished playing, auto-advance to next chunk
+                    # Audio finished playing
                     debug_print(f"Audio finished for chunk {current_index + 1}")
                     
-                    # Check if we can advance
-                    if current_index < len(history) - 1:
+                    # Check if we're at the last chunk
+                    is_at_last_chunk = (current_index == len(history) - 1 and audio_queue.empty() and generation_done)
+                    
+                    if is_at_last_chunk:
+                        # Don't auto-advance from the last chunk
+                        debug_print("At last chunk, stopping auto-advance")
+                        print(f"\n{success_color}Reached end. Use ↑ arrow to replay previous chunks.{reset_color}\n")
+                        # Wait for user input
+                        while True:
+                            if is_data():
+                                c = sys.stdin.read(1)
+                                if c == '\x1b':  # ESC
+                                    time.sleep(0.01)
+                                    if is_data():
+                                        next_char = sys.stdin.read(1)
+                                        if next_char == '[' and is_data():
+                                            arrow_char = sys.stdin.read(1)
+                                            if arrow_char == 'A' and current_index > 0:  # Up arrow
+                                                current_index = current_index - 1
+                                                break
+                                            elif arrow_char == 'B':  # Down arrow at end
+                                                continue  # Stay at last chunk
+                                    return  # Just ESC
+                                elif c == 'q' or c == 'Q':
+                                    return
+                            time.sleep(0.1)
+                    elif current_index < len(history) - 1:
                         # We already have the next chunk in history
                         current_index += 1
                         debug_print(f"Auto-advancing to chunk {current_index + 1} (already in history)")
@@ -508,8 +533,6 @@ def play_audio_files_with_status(audio_queue, status_queue, tts):
                             debug_print(f"Auto-advancing to chunk {current_index + 1} (fetched from queue)")
                         except queue.Empty:
                             debug_print("Queue was empty when trying to auto-advance")
-                    else:
-                        debug_print(f"No more chunks to play")
                 else:
                     debug_print(f"User navigated to chunk {current_index + 1}")
     finally:
