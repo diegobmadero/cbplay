@@ -181,6 +181,10 @@ def clean_text_for_display(text):
     """Clean text for better display by removing excessive symbols and formatting"""
     import re
     
+    # First, preserve bullet point structure by ensuring each bullet is on its own line
+    text = re.sub(r'([.!?])\s*•', r'\1\n    •', text)
+    text = re.sub(r'•', '\n    •', text)
+    
     # Remove box drawing characters (│, ─, └, ├, etc.)
     text = re.sub(r'[│├└─┌┐┘┤┬┴┼╭╮╯╰╱╲╳]', '', text)
     
@@ -195,12 +199,8 @@ def clean_text_for_display(text):
     text = re.sub(r'\n\s*\|\s*', '\n', text)
     text = re.sub(r'\s*\|\s+(?=\n)', '', text)  # Remove trailing pipes
     
-    # Convert bullet points to simple dashes and ensure new paragraph
-    text = re.sub(r'^\s*[•·∙◦▪▫◆◇★☆]\s*', '\n- ', text, flags=re.MULTILINE)
-    text = re.sub(r'^\s*\*\s+(?!\*)', '\n- ', text, flags=re.MULTILINE)
-    
     # Clean up excessive whitespace while preserving paragraph breaks
-    text = re.sub(r'\n{4,}', '\n\n\n', text)  # Max 3 newlines
+    text = re.sub(r'\n{4,}', '\n\n', text)  # Max 2 newlines
     text = re.sub(r'[ \t]+', ' ', text)  # Multiple spaces to single space
     
     # Clean lines
@@ -212,7 +212,12 @@ def clean_text_for_display(text):
         line = line.strip()
         # Skip lines that are just formatting characters
         if line and not all(c in '│├└─┌┐┘┤┬┴┼ ' for c in line):
-            cleaned_lines.append(line)
+            # Check if this is a bullet point line
+            if line.startswith('•'):
+                # Ensure proper formatting for bullet points
+                cleaned_lines.append('    ' + line)
+            else:
+                cleaned_lines.append(line)
             prev_empty = False
         elif not line:
             # Keep single empty lines for paragraph breaks
@@ -223,11 +228,8 @@ def clean_text_for_display(text):
     # Join and do final cleanup
     result = '\n'.join(cleaned_lines)
     
-    # Ensure bullet points have proper spacing
-    result = re.sub(r'\n-\s+', '\n\n- ', result)
-    
     # Clean up any remaining excessive newlines
-    result = re.sub(r'\n{4,}', '\n\n\n', result)
+    result = re.sub(r'\n{3,}', '\n\n', result)
     
     return result.strip()
 
