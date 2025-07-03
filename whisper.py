@@ -178,60 +178,22 @@ class TTSFile:
         return out_file
 
 def clean_text_for_display(text):
-    """Clean text for better display by removing excessive symbols and formatting"""
+    """Minimal text cleaning - just remove the worst formatting artifacts"""
     import re
     
-    # First, preserve bullet point structure by ensuring each bullet is on its own line
-    text = re.sub(r'([.!?])\s*•', r'\1\n    •', text)
-    text = re.sub(r'•', '\n    •', text)
-    
-    # Remove box drawing characters (│, ─, └, ├, etc.)
+    # Remove box drawing characters
     text = re.sub(r'[│├└─┌┐┘┤┬┴┼╭╮╯╰╱╲╳]', '', text)
     
-    # Remove multiple asterisks but keep markdown bold (**)
-    text = re.sub(r'\*{3,}', '', text)
+    # Remove excessive asterisks (more than 10 in a row)
+    text = re.sub(r'\*{10,}', '', text)
     
-    # Clean up markdown headers but keep the text and add spacing
-    text = re.sub(r'^#{1,6}\s*', '\n', text, flags=re.MULTILINE)
+    # Clean up excessive newlines (more than 3)
+    text = re.sub(r'\n{4,}', '\n\n\n', text)
     
-    # Remove standalone pipes and clean up table formatting
-    text = re.sub(r'\s*\|\s*\n', '\n', text)
-    text = re.sub(r'\n\s*\|\s*', '\n', text)
-    text = re.sub(r'\s*\|\s+(?=\n)', '', text)  # Remove trailing pipes
+    # Remove trailing whitespace from lines
+    lines = [line.rstrip() for line in text.split('\n')]
     
-    # Clean up excessive whitespace while preserving paragraph breaks
-    text = re.sub(r'\n{4,}', '\n\n', text)  # Max 2 newlines
-    text = re.sub(r'[ \t]+', ' ', text)  # Multiple spaces to single space
-    
-    # Clean lines
-    lines = text.split('\n')
-    cleaned_lines = []
-    prev_empty = False
-    
-    for line in lines:
-        line = line.strip()
-        # Skip lines that are just formatting characters
-        if line and not all(c in '│├└─┌┐┘┤┬┴┼ ' for c in line):
-            # Check if this is a bullet point line
-            if line.startswith('•'):
-                # Ensure proper formatting for bullet points
-                cleaned_lines.append('    ' + line)
-            else:
-                cleaned_lines.append(line)
-            prev_empty = False
-        elif not line:
-            # Keep single empty lines for paragraph breaks
-            if not prev_empty:
-                cleaned_lines.append('')
-            prev_empty = True
-    
-    # Join and do final cleanup
-    result = '\n'.join(cleaned_lines)
-    
-    # Clean up any remaining excessive newlines
-    result = re.sub(r'\n{3,}', '\n\n', result)
-    
-    return result.strip()
+    return '\n'.join(lines)
 
 def get_clipboard_content():
     content = pyperclip.paste()
@@ -239,41 +201,29 @@ def get_clipboard_content():
     return content
 
 def split_text_intelligently(text, max_chars=1600):
-    """Split text into chunks intelligently, preserving sentence boundaries"""
+    """Split text into chunks without breaking the structure"""
     chunks = []
     current_chunk = ""
     
-    # Split by double newlines first (paragraphs)
-    paragraphs = text.split('\n\n')
+    # Process the text line by line to preserve structure
+    lines = text.split('\n')
     
-    for para in paragraphs:
-        para = para.strip()
-        if not para:
-            continue
-            
-        # If paragraph is too long, split by sentences
-        if len(para) > max_chars:
-            # Try splitting by periods, question marks, and exclamation marks
-            import re
-            sentences = re.split(r'(?<=[.!?])\s+', para)
-            for sent in sentences:
-                if len(current_chunk) + len(sent) + 2 <= max_chars:
-                    current_chunk += sent + " "
-                else:
-                    if current_chunk:
-                        chunks.append(current_chunk.strip())
-                    current_chunk = sent + " "
+    for line in lines:
+        # Check if adding this line would exceed the limit
+        line_with_newline = line + '\n'
+        
+        if len(current_chunk) + len(line_with_newline) <= max_chars:
+            # Add the line to current chunk
+            current_chunk += line_with_newline
         else:
-            # Try to fit whole paragraph
-            if len(current_chunk) + len(para) + 4 <= max_chars:
-                current_chunk += para + "\n\n"
-            else:
-                if current_chunk:
-                    chunks.append(current_chunk.strip())
-                current_chunk = para + "\n\n"
+            # Start a new chunk
+            if current_chunk:
+                chunks.append(current_chunk.rstrip())
+            current_chunk = line_with_newline
     
+    # Add the last chunk
     if current_chunk:
-        chunks.append(current_chunk.strip())
+        chunks.append(current_chunk.rstrip())
     
     debug_print(f"Split into {len(chunks)} chunks")
     return chunks
@@ -497,19 +447,16 @@ def play_audio_files_with_status(audio_queue, status_queue, tts):
             # Show history context
             if current_index > 0:
                 prev_file, prev_text = history[current_index - 1]
-                # Clean and show entire previous chunk with proper wrapping
+                # Clean and show with simple indent
                 cleaned_prev = clean_text_for_display(prev_text)
-                wrapped_prev = '\n'.join(['\n'.join(['  ' + line for line in wrapper.wrap(line)]) if line else '' for line in cleaned_prev.split('\n')])
-                print(f"{prev_color}Previous:\n{wrapped_prev}\n{reset_color}")
+                indented_prev = '\n'.join(['  ' + line for line in cleaned_prev.split('\n')])
+                print(f"{prev_color}Previous:\n{indented_prev}\n{reset_color}")
 
             if 0 <= current_index < len(history):
                 audio_file, original_text_chunk = history[current_index]
-                # Clean text for display
+                # Just display the raw text with minimal cleaning
                 cleaned_text = clean_text_for_display(original_text_chunk)
-                wrapped_text = '\n'.join(['\n'.join(wrapper.wrap(line)) for line in cleaned_text.split('\n')])
-                
-                # Just show the current chunk text without "Playing X/Y"
-                print(f"{active_color}Current:\n{wrapped_text}\n{reset_color}")
+                print(f"{active_color}Current:\n{cleaned_text}\n{reset_color}")
 
                 # Play audio
                 process = subprocess.Popen(['afplay', str(audio_file)])
