@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv
+
+# Audio files
+*.aac
+*.mp3
+*.wav
+
+# Temp files
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Debug output
+debug_output.txt
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.sublime-*
+
+# Environment
+.env
