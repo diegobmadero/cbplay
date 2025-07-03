@@ -177,12 +177,66 @@ class TTSFile:
         debug_print(f"Generated audio file at: {out_file}")
         return out_file
 
+def clean_text_for_display(text):
+    """Clean text for better display by removing excessive symbols and formatting"""
+    import re
+    
+    # Remove box drawing characters (│, ─, └, ├, etc.)
+    text = re.sub(r'[│├└─┌┐┘┤┬┴┼╭╮╯╰╱╲╳]', '', text)
+    
+    # Remove multiple asterisks but keep markdown bold (**)
+    text = re.sub(r'\*{3,}', '', text)
+    
+    # Clean up markdown headers but keep the text and add spacing
+    text = re.sub(r'^#{1,6}\s*', '\n', text, flags=re.MULTILINE)
+    
+    # Remove standalone pipes and clean up table formatting
+    text = re.sub(r'\s*\|\s*\n', '\n', text)
+    text = re.sub(r'\n\s*\|\s*', '\n', text)
+    text = re.sub(r'\s*\|\s+(?=\n)', '', text)  # Remove trailing pipes
+    
+    # Convert bullet points to simple dashes and ensure new paragraph
+    text = re.sub(r'^\s*[•·∙◦▪▫◆◇★☆]\s*', '\n- ', text, flags=re.MULTILINE)
+    text = re.sub(r'^\s*\*\s+(?!\*)', '\n- ', text, flags=re.MULTILINE)
+    
+    # Clean up excessive whitespace while preserving paragraph breaks
+    text = re.sub(r'\n{4,}', '\n\n\n', text)  # Max 3 newlines
+    text = re.sub(r'[ \t]+', ' ', text)  # Multiple spaces to single space
+    
+    # Clean lines
+    lines = text.split('\n')
+    cleaned_lines = []
+    prev_empty = False
+    
+    for line in lines:
+        line = line.strip()
+        # Skip lines that are just formatting characters
+        if line and not all(c in '│├└─┌┐┘┤┬┴┼ ' for c in line):
+            cleaned_lines.append(line)
+            prev_empty = False
+        elif not line:
+            # Keep single empty lines for paragraph breaks
+            if not prev_empty:
+                cleaned_lines.append('')
+            prev_empty = True
+    
+    # Join and do final cleanup
+    result = '\n'.join(cleaned_lines)
+    
+    # Ensure bullet points have proper spacing
+    result = re.sub(r'\n-\s+', '\n\n- ', result)
+    
+    # Clean up any remaining excessive newlines
+    result = re.sub(r'\n{4,}', '\n\n\n', result)
+    
+    return result.strip()
+
 def get_clipboard_content():
     content = pyperclip.paste()
     debug_print(f"Clipboard content: {content[:100]}...")
     return content
 
-def split_text_intelligently(text, max_chars=800):
+def split_text_intelligently(text, max_chars=1600):
     """Split text into chunks intelligently, preserving sentence boundaries"""
     chunks = []
     current_chunk = ""
@@ -441,13 +495,16 @@ def play_audio_files_with_status(audio_queue, status_queue, tts):
             # Show history context
             if current_index > 0:
                 prev_file, prev_text = history[current_index - 1]
-                # Show entire previous chunk with proper wrapping
-                wrapped_prev = '\n'.join(['\n'.join(['  ' + line for line in wrapper.wrap(line)]) if line else '' for line in prev_text.split('\n')])
+                # Clean and show entire previous chunk with proper wrapping
+                cleaned_prev = clean_text_for_display(prev_text)
+                wrapped_prev = '\n'.join(['\n'.join(['  ' + line for line in wrapper.wrap(line)]) if line else '' for line in cleaned_prev.split('\n')])
                 print(f"{prev_color}Previous:\n{wrapped_prev}\n{reset_color}")
 
             if 0 <= current_index < len(history):
                 audio_file, original_text_chunk = history[current_index]
-                wrapped_text = '\n'.join(['\n'.join(wrapper.wrap(line)) for line in original_text_chunk.split('\n')])
+                # Clean text for display
+                cleaned_text = clean_text_for_display(original_text_chunk)
+                wrapped_text = '\n'.join(['\n'.join(wrapper.wrap(line)) for line in cleaned_text.split('\n')])
                 
                 # Just show the current chunk text without "Playing X/Y"
                 print(f"{active_color}Current:\n{wrapped_text}\n{reset_color}")
