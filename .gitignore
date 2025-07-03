@@ -18,6 +18,8 @@ venv/
 *.swp
 *.swo
 *~
+whisper_improved.py
+test_whisper*.py
 
 # Debug output
 debug_output.txt

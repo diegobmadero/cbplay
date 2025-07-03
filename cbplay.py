@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# cbplay - Clipboard Play: Text-to-speech for clipboard content
 
 import hashlib
 import pyperclip

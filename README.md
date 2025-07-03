@@ -1,6 +1,6 @@
-# WhisperPlay
+# cbplay
 
-Text-to-speech tool that converts clipboard content to audio using OpenAI's TTS API.
+Clipboard Play - Text-to-speech tool that converts clipboard content to audio using OpenAI's TTS API.
 
 ## Setup
 
@@ -11,18 +11,18 @@ export OPENAI_API_KEY=your-api-key-here
 
 2. Make the script executable:
 ```bash
-chmod +x whisper.py
+chmod +x cbplay.py
 ```
 
 3. Create a symlink for easy access:
 ```bash
-ln -s /path/to/whisperplay/whisper.py ~/bin/wplay
+ln -s /path/to/cbplay/cbplay.py ~/bin/cbplay
 ```
 
 ## Usage
 
 1. Copy text to clipboard
-2. Run `wplay`
+2. Run `cbplay`
 3. Listen as it reads the text in chunks
 
 ## Controls
