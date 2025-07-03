@@ -447,10 +447,9 @@ def play_audio_files_with_status(audio_queue, status_queue, tts):
             # Show history context
             if current_index > 0:
                 prev_file, prev_text = history[current_index - 1]
-                # Clean and show with simple indent
+                # Just display the raw text with minimal cleaning
                 cleaned_prev = clean_text_for_display(prev_text)
-                indented_prev = '\n'.join(['  ' + line for line in cleaned_prev.split('\n')])
-                print(f"{prev_color}Previous:\n{indented_prev}\n{reset_color}")
+                print(f"{prev_color}Previous:\n{cleaned_prev}\n{reset_color}")
 
             if 0 <= current_index < len(history):
                 audio_file, original_text_chunk = history[current_index]
