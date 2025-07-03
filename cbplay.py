@@ -205,7 +205,7 @@ def get_clipboard_content():
     debug_print(f"Clipboard content: {content[:100]}...")
     return content
 
-def split_text_intelligently(text, max_chars=1600):
+def split_text_intelligently(text, max_chars=2000):
     """Split text into chunks without breaking the structure"""
     chunks = []
     current_chunk = ""
