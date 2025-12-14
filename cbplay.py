@@ -419,6 +419,8 @@ def play_audio_files_with_status(
     highlight_model="gpt-4o-transcribe",
     highlight_window=8,
     resume_rewind=2.0,
+    playhead_lag=None,
+    esc_timeout=None,
     ui_debug=False,
 ):
     # Check if we're in a TTY or if NOTTY is set
@@ -470,6 +472,34 @@ def play_audio_files_with_status(
         rewind_padding = max(0.0, float(resume_rewind or 0.0))
         highlight_enabled = bool(highlight)
         ui_debug = bool(ui_debug)
+
+        if playhead_lag is None:
+            playhead_lag_seconds = 0.10 if ffplay_available else 0.25
+        else:
+            try:
+                playhead_lag_seconds = max(0.0, float(playhead_lag))
+            except Exception:
+                playhead_lag_seconds = 0.10 if ffplay_available else 0.25
+
+        esc_timeout_first = 0.60 if os.getenv("TMUX") else 0.10
+        if esc_timeout is not None:
+            try:
+                esc_timeout_first = max(0.01, float(esc_timeout))
+            except Exception:
+                pass
+        else:
+            esc_timeout_env = os.getenv("CBPLAY_ESC_TIMEOUT")
+            if esc_timeout_env:
+                try:
+                    esc_timeout_first = max(0.01, float(esc_timeout_env))
+                except Exception:
+                    pass
+        esc_timeout_rest = 0.01
+        if ui_debug:
+            debug_log_file(
+                f"ui config ffplay={ffplay_available} playhead_lag={playhead_lag_seconds} "
+                f"esc_timeout_first={esc_timeout_first} tmux={'y' if os.getenv('TMUX') else 'n'}"
+            )
         highlight_inflight = set()
         highlight_lock = threading.Lock()
         highlight_task_queue = queue.Queue() if highlight_enabled else None
@@ -942,6 +972,7 @@ def play_audio_files_with_status(
             playback_offset = 0.0  # Where playback started for this process
             process = start_player(audio_file, start_at=playback_offset)
             playback_started_at = time.monotonic()
+            playback_lag = playhead_lag_seconds
             paused_at = None  # Playhead position when paused
             user_interrupted = False
             paused = False
@@ -951,7 +982,7 @@ def play_audio_files_with_status(
                     c = read_char()
                     if c == ' ':
                         now = time.monotonic()
-                        current_playhead = playback_offset + (now - playback_started_at)
+                        current_playhead = max(0.0, playback_offset + (now - playback_started_at) - playback_lag)
                         if paused:
                             if (not highlight_enabled) and pause_message_shown:
                                 clear_pause_message()
@@ -970,9 +1001,11 @@ def play_audio_files_with_status(
                                             pass
                                 process = start_player(audio_file, start_at=target_offset)
                                 playback_offset = target_offset
+                                playback_lag = playhead_lag_seconds
                             else:
                                 process.send_signal(signal.SIGCONT)
                                 playback_offset = resume_from
+                                playback_lag = 0.0
                             playback_started_at = time.monotonic()
                             paused = False
                             paused_at = None
@@ -1008,7 +1041,11 @@ def play_audio_files_with_status(
                                 last_debug_line = debug_line
                         continue
                     if c == '\x1b':  # ESC or arrow key sequence
-                        seq = read_escape_sequence(max_chars=32, timeout_first=0.05, timeout_rest=0.005)
+                        seq = read_escape_sequence(
+                            max_chars=32,
+                            timeout_first=esc_timeout_first,
+                            timeout_rest=esc_timeout_rest,
+                        )
                         debug_log_file(f"key esc seq={seq!r} bytes={[ord(ch) for ch in seq]}")
                         if seq and seq[-1] in ("A", "B", "C", "D"):
                             suffix = seq[-1]
@@ -1070,7 +1107,7 @@ def play_audio_files_with_status(
                             words = None
                             tokens = None
                             word_to_token = None
-                    playhead = playback_offset + (time.monotonic() - playback_started_at)
+                    playhead = max(0.0, playback_offset + (time.monotonic() - playback_started_at) - playback_lag)
                 if words:
                     while (current_word_index + 1) < len(words) and playhead >= words[current_word_index].get("end", 0.0):
                         current_word_index += 1
@@ -1138,7 +1175,11 @@ def play_audio_files_with_status(
                         if is_data():
                             c = read_char()
                             if c == '\x1b':  # ESC or arrow key sequence
-                                seq = read_escape_sequence(max_chars=32, timeout_first=0.05, timeout_rest=0.005)
+                                seq = read_escape_sequence(
+                                    max_chars=32,
+                                    timeout_first=esc_timeout_first,
+                                    timeout_rest=esc_timeout_rest,
+                                )
                                 debug_log_file(f"end key esc seq={seq!r} bytes={[ord(ch) for ch in seq]}")
                                 suffix = seq[-1] if seq else None
                                 if suffix == "A":  # Up arrow
@@ -1395,6 +1436,8 @@ def run_interactive_tts_flow(clipboard_content, combined_texts, args, model):
         highlight_model=args.highlight_model,
         highlight_window=args.highlight_window,
         resume_rewind=args.resume_rewind,
+        playhead_lag=args.playhead_lag,
+        esc_timeout=args.esc_timeout,
         ui_debug=args.debug,
     )
 
@@ -1438,6 +1481,14 @@ def main():
                         type=float,
                         default=2.0,
                         help='Seconds to rewind on resume (helps compensate for player buffering; default: 2.0).')
+    parser.add_argument('--playhead-lag',
+                        type=float,
+                        default=None,
+                        help='Seconds to subtract from the internal playhead to better sync highlighting with audio output (default: 0.25 for afplay, 0.10 for ffplay).')
+    parser.add_argument('--esc-timeout',
+                        type=float,
+                        default=None,
+                        help='Seconds to wait after receiving ESC for an escape sequence (helps arrow keys under tmux/screen; defaults to 0.60 in tmux, otherwise 0.10).')
     parser.add_argument('--debug',
                         action='store_true',
                         help='Show debug info in the interactive UI (e.g., highlight cache status and errors).')
