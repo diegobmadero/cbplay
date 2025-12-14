@@ -481,7 +481,7 @@ def play_audio_files_with_status(
             except Exception:
                 playhead_lag_seconds = 0.10 if ffplay_available else 0.25
 
-        esc_timeout_first = 0.60 if os.getenv("TMUX") else 0.10
+        esc_timeout_first = 0.60 if os.getenv("TMUX") else 0.25
         if esc_timeout is not None:
             try:
                 esc_timeout_first = max(0.01, float(esc_timeout))
@@ -1488,7 +1488,7 @@ def main():
     parser.add_argument('--esc-timeout',
                         type=float,
                         default=None,
-                        help='Seconds to wait after receiving ESC for an escape sequence (helps arrow keys under tmux/screen; defaults to 0.60 in tmux, otherwise 0.10).')
+                        help='Seconds to wait after receiving ESC for an escape sequence (helps arrow keys under tmux/screen; defaults to 0.60 in tmux, otherwise 0.25).')
     parser.add_argument('--debug',
                         action='store_true',
                         help='Show debug info in the interactive UI (e.g., highlight cache status and errors).')
