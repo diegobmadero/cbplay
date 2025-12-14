@@ -994,6 +994,7 @@ def play_audio_files_with_status(
                                     process.send_signal(signal.SIGCONT)
                                 process.terminate()
                                 break
+                            continue
                         elif suffix in ("[B", "OB"):  # Down arrow
                             if current_index < len(history) - 1:
                                 current_index = current_index + 1
@@ -1002,6 +1003,7 @@ def play_audio_files_with_status(
                                     process.send_signal(signal.SIGCONT)
                                 process.terminate()
                                 break
+                            continue
                         if paused:
                             process.send_signal(signal.SIGCONT)
                         process.terminate()
@@ -1106,9 +1108,11 @@ def play_audio_files_with_status(
                             c = sys.stdin.read(1)
                             if c == '\x1b':  # ESC or arrow key sequence
                                 suffix = read_escape_suffix(2, timeout=0.05)
-                                if suffix in ("[A", "OA") and current_index > 0:  # Up arrow
-                                    current_index = current_index - 1
-                                    break
+                                if suffix in ("[A", "OA"):  # Up arrow
+                                    if current_index > 0:
+                                        current_index = current_index - 1
+                                        break
+                                    continue
                                 if suffix in ("[B", "OB"):  # Down arrow at end
                                     continue  # Stay at last chunk
                                 return  # Plain ESC
