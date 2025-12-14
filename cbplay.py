@@ -406,7 +406,10 @@ def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
 
 def is_data():
-    return select.select([sys.stdin], [], [], 0) == ([sys.stdin], [], [])
+    try:
+        return bool(select.select([sys.stdin.fileno()], [], [], 0)[0])
+    except Exception:
+        return select.select([sys.stdin], [], [], 0) == ([sys.stdin], [], [])
 
 def play_audio_files_with_status(
     audio_queue,
@@ -455,6 +458,7 @@ def play_audio_files_with_status(
     old_settings = termios.tcgetattr(sys.stdin)
     try:
         tty.setcbreak(sys.stdin.fileno())
+        stdin_fd = sys.stdin.fileno()
         active_color = '\033[93m'  # Yellow
         prev_color = '\033[90m'    # Grey
         reset_color = '\033[0m'
@@ -474,21 +478,40 @@ def play_audio_files_with_status(
             sys.stdout.write("\033[F\033[K")
             sys.stdout.flush()
 
-        def read_escape_suffix(max_chars=2, timeout=0.05):
-            """Read up to `max_chars` bytes after an ESC with a short timeout."""
-            suffix_chars = []
-            for _ in range(int(max_chars or 0)):
+        def read_char():
+            try:
+                data = os.read(stdin_fd, 1)
+            except Exception:
+                return ""
+            if not data:
+                return ""
+            return chr(data[0])
+
+        def read_escape_sequence(max_chars=32, timeout_first=0.05, timeout_rest=0.005):
+            """Read remaining chars after an ESC keypress (e.g. arrow-key sequence)."""
+            seq_chars = []
+            for i in range(int(max_chars or 0)):
+                timeout = float(timeout_first if i == 0 else timeout_rest)
                 try:
-                    ready, _, _ = select.select([sys.stdin], [], [], float(timeout or 0.0))
+                    ready, _, _ = select.select([stdin_fd], [], [], timeout)
                 except Exception:
                     break
                 if not ready:
                     break
                 try:
-                    suffix_chars.append(sys.stdin.read(1))
+                    data = os.read(stdin_fd, 1)
                 except Exception:
                     break
-            return "".join(suffix_chars)
+                if not data:
+                    break
+                seq_chars.append(chr(data[0]))
+                if seq_chars[0] == "O" and len(seq_chars) >= 2:
+                    break
+                if seq_chars[0] == "[" and len(seq_chars) >= 2:
+                    last = seq_chars[-1]
+                    if last.isalpha() or last == "~":
+                        break
+            return "".join(seq_chars)
 
         def word_cache_path_for_text(text):
             return tts.cache_dir / f"{tts._hash_text(text)}.words.json"
@@ -925,7 +948,7 @@ def play_audio_files_with_status(
             pause_message_shown = False
             while process.poll() is None:
                 if is_data():
-                    c = sys.stdin.read(1)
+                    c = read_char()
                     if c == ' ':
                         now = time.monotonic()
                         current_playhead = playback_offset + (now - playback_started_at)
@@ -985,8 +1008,13 @@ def play_audio_files_with_status(
                                 last_debug_line = debug_line
                         continue
                     if c == '\x1b':  # ESC or arrow key sequence
-                        suffix = read_escape_suffix(2, timeout=0.05)
-                        if suffix in ("[A", "OA"):  # Up arrow
+                        seq = read_escape_sequence(max_chars=32, timeout_first=0.05, timeout_rest=0.005)
+                        debug_log_file(f"key esc seq={seq!r} bytes={[ord(ch) for ch in seq]}")
+                        if seq and seq[-1] in ("A", "B", "C", "D"):
+                            suffix = seq[-1]
+                        else:
+                            suffix = None
+                        if suffix == "A":  # Up arrow
                             if current_index > 0:
                                 current_index = current_index - 1
                                 user_interrupted = True
@@ -995,7 +1023,7 @@ def play_audio_files_with_status(
                                 process.terminate()
                                 break
                             continue
-                        elif suffix in ("[B", "OB"):  # Down arrow
+                        elif suffix == "B":  # Down arrow
                             if current_index < len(history) - 1:
                                 current_index = current_index + 1
                                 user_interrupted = True
@@ -1003,6 +1031,9 @@ def play_audio_files_with_status(
                                     process.send_signal(signal.SIGCONT)
                                 process.terminate()
                                 break
+                            continue
+                        if seq:
+                            debug_log_file(f"unhandled esc sequence: {seq!r}")
                             continue
                         if paused:
                             process.send_signal(signal.SIGCONT)
@@ -1105,16 +1136,21 @@ def play_audio_files_with_status(
                     # Wait for user input
                     while True:
                         if is_data():
-                            c = sys.stdin.read(1)
+                            c = read_char()
                             if c == '\x1b':  # ESC or arrow key sequence
-                                suffix = read_escape_suffix(2, timeout=0.05)
-                                if suffix in ("[A", "OA"):  # Up arrow
+                                seq = read_escape_sequence(max_chars=32, timeout_first=0.05, timeout_rest=0.005)
+                                debug_log_file(f"end key esc seq={seq!r} bytes={[ord(ch) for ch in seq]}")
+                                suffix = seq[-1] if seq else None
+                                if suffix == "A":  # Up arrow
                                     if current_index > 0:
                                         current_index = current_index - 1
                                         break
                                     continue
-                                if suffix in ("[B", "OB"):  # Down arrow at end
+                                if suffix == "B":  # Down arrow at end
                                     continue  # Stay at last chunk
+                                if seq:
+                                    debug_log_file(f"end unhandled esc sequence: {seq!r}")
+                                    continue
                                 return  # Plain ESC
                             elif c == 'q' or c == 'Q':
                                 debug_log_file("exit at end via q")
