@@ -491,12 +491,13 @@ def play_audio_files_with_status(
             highlight_context_words = 1
 
         if playhead_lag is None:
-            playhead_lag_seconds = 0.10 if ffplay_available else 0.25
+            # Start with a small/zero correction; users can tune via --playhead-lag if needed.
+            playhead_lag_seconds = 0.0 if ffplay_available else 0.05
         else:
             try:
                 playhead_lag_seconds = max(0.0, float(playhead_lag))
             except Exception:
-                playhead_lag_seconds = 0.10 if ffplay_available else 0.25
+                playhead_lag_seconds = 0.0 if ffplay_available else 0.05
 
         esc_timeout_first = 0.60 if os.getenv("TMUX") else 0.25
         if esc_timeout is not None:
@@ -1710,7 +1711,7 @@ def main():
     parser.add_argument('--playhead-lag',
                         type=float,
                         default=None,
-                        help='Seconds to subtract from the internal playhead to better sync highlighting with audio output (default: 0.25 for afplay, 0.10 for ffplay).')
+                        help='Seconds to subtract from the internal playhead to better sync highlighting with audio output (default: 0.05 for afplay, 0.0 for ffplay).')
     parser.add_argument('--esc-timeout',
                         type=float,
                         default=None,
