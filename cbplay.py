@@ -472,6 +472,10 @@ def play_audio_files_with_status(
         rewind_padding = max(0.0, float(resume_rewind or 0.0))
         highlight_enabled = bool(highlight)
         ui_debug = bool(ui_debug)
+        try:
+            highlight_context_words = max(0, int(highlight_window or 0))
+        except Exception:
+            highlight_context_words = 1
 
         if playhead_lag is None:
             playhead_lag_seconds = 0.10 if ffplay_available else 0.25
@@ -681,28 +685,33 @@ def play_audio_files_with_status(
                     token_index = found + 1
             return mapping
 
-        def render_current_region(text: str, highlight_span=None, paused=False, debug_line=None):
+        def render_current_region(text: str, highlight_spans=None, paused=False, debug_line=None):
             label = "Current"
             if paused:
                 label += " [PAUSED]"
             label_line = f"{active_color}{label}:{reset_color}"
 
-            highlight_start = "\033[7m"
-            highlight_end = "\033[27m"
             rendered_text = text or ""
-            if highlight_span and isinstance(highlight_span, (tuple, list)) and len(highlight_span) == 2:
-                try:
-                    start, end = int(highlight_span[0]), int(highlight_span[1])
-                except Exception:
-                    start, end = None, None
-                if start is not None and end is not None and 0 <= start < end <= len(rendered_text):
-                    rendered_text = (
-                        rendered_text[:start]
-                        + highlight_start
-                        + rendered_text[start:end]
-                        + highlight_end
-                        + rendered_text[end:]
-                    )
+            if highlight_spans:
+                events = {}
+                for span in highlight_spans:
+                    if not span or len(span) != 4:
+                        continue
+                    try:
+                        start, end, start_code, end_code = span
+                        start = int(start)
+                        end = int(end)
+                        start_code = str(start_code)
+                        end_code = str(end_code)
+                    except Exception:
+                        continue
+                    if start_code:
+                        events.setdefault(start, []).append(start_code)
+                    if end_code:
+                        events.setdefault(end, []).append(end_code)
+                for idx in sorted(events.keys(), reverse=True):
+                    if 0 <= idx <= len(rendered_text):
+                        rendered_text = rendered_text[:idx] + "".join(events[idx]) + rendered_text[idx:]
 
             wrapped = hard_wrap_ansi(rendered_text, display_width)
             lines = [label_line]
@@ -715,6 +724,24 @@ def play_audio_files_with_status(
             if debug_line:
                 lines.append(f"{info_color}{debug_line}{reset_color}")
             return lines
+
+        def build_highlight_spans(context_span, current_word_span):
+            spans = []
+            if context_span and isinstance(context_span, (tuple, list)) and len(context_span) == 2:
+                try:
+                    start, end = int(context_span[0]), int(context_span[1])
+                except Exception:
+                    start, end = None, None
+                if start is not None and end is not None and 0 <= start < end:
+                    spans.append((start, end, "\033[4m", "\033[24m"))  # underline
+            if current_word_span and isinstance(current_word_span, (tuple, list)) and len(current_word_span) == 2:
+                try:
+                    start, end = int(current_word_span[0]), int(current_word_span[1])
+                except Exception:
+                    start, end = None, None
+                if start is not None and end is not None and 0 <= start < end:
+                    spans.append((start, end, "\033[7m", "\033[27m"))  # reverse video
+            return spans if spans else None
 
         def redraw_region(lines, line_count):
             if not lines:
@@ -910,11 +937,12 @@ def play_audio_files_with_status(
                 words = None
                 words_error = None
                 words_status = "preparing"
-                current_word_index = 0
+                current_word_index = -1
                 last_words_status = words_status
                 tokens = None
                 word_to_token = None
                 current_highlight_span = None
+                current_highlight_word_span = None
                 region_lines = None
                 region_line_count = 0
                 last_debug_line = None
@@ -937,11 +965,30 @@ def play_audio_files_with_status(
                         words_error = None
                         words_status = "preparing"
                 if words and words_status == "ok":
+                    try:
+                        if float(words[0].get("start", 0.0)) <= 0.05:
+                            current_word_index = 0
+                    except Exception:
+                        pass
                     tokens = extract_text_tokens(cleaned_text)
                     word_to_token = align_words_to_text(words, tokens)
-                    if word_to_token and word_to_token[0] is not None:
-                        t = tokens[word_to_token[0]]
-                        current_highlight_span = (t["start"], t["end"])
+                    if current_word_index >= 0 and word_to_token and tokens:
+                        spans = []
+                        for wi in range(
+                            current_word_index - highlight_context_words,
+                            current_word_index + highlight_context_words + 1,
+                        ):
+                            if 0 <= wi < len(word_to_token):
+                                token_idx = word_to_token[wi]
+                                if token_idx is not None and 0 <= token_idx < len(tokens):
+                                    t = tokens[token_idx]
+                                    spans.append((t["start"], t["end"]))
+                        if spans:
+                            current_highlight_span = (min(s for s, _ in spans), max(e for _, e in spans))
+                        token_idx = word_to_token[current_word_index]
+                        if token_idx is not None and 0 <= token_idx < len(tokens):
+                            t = tokens[token_idx]
+                            current_highlight_word_span = (t["start"], t["end"])
                 if words_status == "ok":
                     try:
                         first_word = words[0] if words else None
@@ -956,7 +1003,7 @@ def play_audio_files_with_status(
                 last_debug_line = highlight_debug_info(audio_file, words_cache_path, words_status, words_error)
                 region_lines = render_current_region(
                     cleaned_text,
-                    highlight_span=current_highlight_span,
+                    highlight_spans=build_highlight_spans(current_highlight_span, current_highlight_word_span),
                     paused=False,
                     debug_line=last_debug_line,
                 )
@@ -1015,7 +1062,7 @@ def play_audio_files_with_status(
                                 debug_line = highlight_debug_info(audio_file, words_cache_path, words_status, words_error)
                                 region_lines = render_current_region(
                                     cleaned_text,
-                                    highlight_span=current_highlight_span,
+                                    highlight_spans=build_highlight_spans(current_highlight_span, current_highlight_word_span),
                                     paused=False,
                                     debug_line=debug_line,
                                 )
@@ -1032,7 +1079,7 @@ def play_audio_files_with_status(
                                 debug_line = highlight_debug_info(audio_file, words_cache_path, words_status, words_error)
                                 region_lines = render_current_region(
                                     cleaned_text,
-                                    highlight_span=current_highlight_span,
+                                    highlight_spans=build_highlight_spans(current_highlight_span, current_highlight_word_span),
                                     paused=True,
                                     debug_line=debug_line,
                                 )
@@ -1098,7 +1145,7 @@ def play_audio_files_with_status(
                             words_status = "ok"
                             words_error = None
                             words = payload.get("words") or None
-                            current_word_index = 0
+                            current_word_index = -1
                             tokens = extract_text_tokens(cleaned_text)
                             word_to_token = align_words_to_text(words, tokens)
                         else:
@@ -1109,33 +1156,64 @@ def play_audio_files_with_status(
                             word_to_token = None
                     playhead = max(0.0, playback_offset + (time.monotonic() - playback_started_at) - playback_lag)
                 if words:
-                    while (current_word_index + 1) < len(words) and playhead >= words[current_word_index].get("end", 0.0):
+                    while (current_word_index + 1) < len(words) and playhead >= words[current_word_index + 1].get("start", 0.0):
                         current_word_index += 1
                         debug_log_file(f"word advance -> idx={current_word_index} playhead={playhead:.3f}")
-                    while current_word_index > 0 and playhead < words[current_word_index].get("start", 0.0):
+                    while current_word_index >= 0 and playhead < words[current_word_index].get("start", 0.0):
                         current_word_index -= 1
                         debug_log_file(f"word rewind -> idx={current_word_index} playhead={playhead:.3f}")
-                new_span = None
-                if words and word_to_token and 0 <= current_word_index < len(word_to_token):
+                new_context_span = None
+                new_word_span = None
+                if words and word_to_token and tokens and current_word_index >= 0:
+                    spans = []
+                    for wi in range(
+                        current_word_index - highlight_context_words,
+                        current_word_index + highlight_context_words + 1,
+                    ):
+                        if 0 <= wi < len(word_to_token):
+                            token_idx = word_to_token[wi]
+                            if token_idx is not None and 0 <= token_idx < len(tokens):
+                                t = tokens[token_idx]
+                                spans.append((t["start"], t["end"]))
+                    if spans:
+                        new_context_span = (min(s for s, _ in spans), max(e for _, e in spans))
                     token_idx = word_to_token[current_word_index]
-                    if token_idx is not None and tokens and 0 <= token_idx < len(tokens):
+                    if token_idx is not None and 0 <= token_idx < len(tokens):
                         t = tokens[token_idx]
-                        new_span = (t["start"], t["end"])
+                        new_word_span = (t["start"], t["end"])
                 debug_line = highlight_debug_info(audio_file, words_cache_path, words_status, words_error)
+                if ui_debug and words and current_word_index >= 0:
+                    try:
+                        w = str(words[current_word_index].get("word", "")).strip()
+                        ws = float(words[current_word_index].get("start", 0.0))
+                        we = float(words[current_word_index].get("end", 0.0))
+                    except Exception:
+                        w = ""
+                        ws = None
+                        we = None
+                    extra = f" ph={playhead:.2f} lag={playback_lag:.2f} idx={current_word_index}/{len(words)}"
+                    if w:
+                        extra += f" w={w!r}"
+                    if ws is not None and we is not None:
+                        extra += f" ws={ws:.2f} we={we:.2f}"
+                    extra += f" ctx={highlight_context_words}"
+                    debug_line = (debug_line or "") + extra
                 if (
-                    new_span != current_highlight_span
+                    new_context_span != current_highlight_span
+                    or new_word_span != current_highlight_word_span
                     or words_status != last_words_status
                     or debug_line != last_debug_line
                     or paused != last_paused_state
                 ):
-                    current_highlight_span = new_span
+                    current_highlight_span = new_context_span
+                    current_highlight_word_span = new_word_span
                     last_words_status = words_status
                     last_debug_line = debug_line
                     last_paused_state = paused
                     if region_lines is not None:
                         region_lines = render_current_region(
                             cleaned_text,
-                            highlight_span=current_highlight_span,
+                            highlight_spans=build_highlight_spans(current_highlight_span, current_highlight_word_span),
                             paused=paused,
                             debug_line=debug_line,
                         )
@@ -1475,8 +1553,8 @@ def main():
                         help='Transcription model used for word-level timestamps when --highlight is enabled (word timestamps require whisper-1).')
     parser.add_argument('--highlight-window',
                         type=int,
-                        default=8,
-                        help='Words of context on each side of the current word when --highlight is enabled (default: 8).')
+                        default=1,
+                        help='Words of context on each side of the highlighted word when --highlight is enabled (default: 1).')
     parser.add_argument('--resume-rewind',
                         type=float,
                         default=2.0,
