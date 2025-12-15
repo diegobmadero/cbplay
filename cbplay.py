@@ -1691,6 +1691,10 @@ def main():
     parser.add_argument('--instructions',
                         default=DEFAULT_STREAMING_INSTRUCTIONS,
                         help='Delivery instructions sent to TTS (gpt-4o* TTS models only; empty string to disable).')
+    parser.add_argument('--chunk-size',
+                        type=int,
+                        default=1200,
+                        help='Max characters per clipboard chunk before TTS splitting (default: 1200).')
     parser.add_argument('--stream',
                         action='store_true',
                         help='Use async streaming playback (AsyncOpenAI + LocalAudioPlayer). Disables interactive UI.')
@@ -1793,7 +1797,13 @@ def main():
         print("Clipboard is empty!")
         return
     
-    combined_texts = [prepare_text_for_tts(t) for t in split_text_intelligently(clipboard_content)]
+    try:
+        chunk_size = int(args.chunk_size)
+    except Exception:
+        chunk_size = 1200
+    if chunk_size <= 0:
+        chunk_size = 1200
+    combined_texts = [prepare_text_for_tts(t) for t in split_text_intelligently(clipboard_content, max_chars=chunk_size)]
     combined_texts = [t for t in combined_texts if t]
 
     # Default: interactive UI unless --stream is requested
