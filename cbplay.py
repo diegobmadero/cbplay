@@ -262,7 +262,14 @@ def prepare_text_for_tts(text: str) -> str:
     return prepared if prepared.strip() else ""
 
 def get_clipboard_content():
-    content = pyperclip.paste()
+    try:
+        content = pyperclip.paste()
+    except Exception as e:
+        debug_print(f"Clipboard read failed: {e}")
+        return ""
+    if content is None:
+        return ""
+    content = str(content)
     debug_print(f"Clipboard content: {content[:100]}...")
     return content
 
