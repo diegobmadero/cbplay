@@ -145,15 +145,15 @@ class TTSFile:
         return None
 
     def _set_params(self, text):
-        sanitized_text = text.strip()
-        if not sanitized_text:
+        raw_text = "" if text is None else str(text)
+        if not raw_text.strip():
             debug_print("Text input is empty after sanitization. Skipping.")
             return None
         params = {
             "voice": self.voice,
             "model": self.model,
             "response_format": self.response_format,
-            "input": sanitized_text,
+            "input": raw_text,
         }
         instructions = self._effective_instructions()
         if instructions:
@@ -254,6 +254,13 @@ def clean_text_for_display(text):
     
     return '\n'.join(lines)
 
+def prepare_text_for_tts(text: str) -> str:
+    """Prepare text once so TTS input, display, and highlighting stay in sync."""
+    if text is None:
+        return ""
+    prepared = clean_text_for_display(str(text)).strip("\r\n")
+    return prepared if prepared.strip() else ""
+
 def get_clipboard_content():
     content = pyperclip.paste()
     debug_print(f"Clipboard content: {content[:100]}...")
@@ -301,24 +308,23 @@ async def stream_tts_chunks(combined_texts, voice, model, instructions, response
     player = LocalAudioPlayer()
     total = len(combined_texts)
     for index, text in enumerate(combined_texts, 1):
-        sanitized = text.strip()
-        if not sanitized:
+        prepared = prepare_text_for_tts(text)
+        if not prepared:
             continue
         
         params = {
             "model": model,
             "voice": voice,
-            "input": sanitized,
+            "input": prepared,
             "response_format": response_format,
         }
         if instructions:
             params["instructions"] = instructions
         
-        header = f"Chunk {index}/{total} ({len(sanitized)} chars)"
+        header = f"Chunk {index}/{total} ({len(prepared)} chars)"
         print(f"\n{header}")
         print("-" * len(header))
-        cleaned = clean_text_for_display(sanitized)
-        print(cleaned)
+        print(prepared)
         print()
         print("Streaming and playing...")
         async with client.audio.speech.with_streaming_response.create(**params) as response:
@@ -639,8 +645,40 @@ def play_audio_files_with_status(
             lines.append("".join(buf))
             return lines
 
+        _number_norm_map = {
+            "zero": "0",
+            "one": "1",
+            "two": "2",
+            "three": "3",
+            "four": "4",
+            "five": "5",
+            "six": "6",
+            "seven": "7",
+            "eight": "8",
+            "nine": "9",
+            "ten": "10",
+            "eleven": "11",
+            "twelve": "12",
+            "thirteen": "13",
+            "fourteen": "14",
+            "fifteen": "15",
+            "sixteen": "16",
+            "seventeen": "17",
+            "eighteen": "18",
+            "nineteen": "19",
+            "twenty": "20",
+            "thirty": "30",
+            "forty": "40",
+            "fifty": "50",
+            "sixty": "60",
+            "seventy": "70",
+            "eighty": "80",
+            "ninety": "90",
+        }
+
         def normalize_for_match(word: str):
-            return re.sub(r"[^a-z0-9]+", "", (word or "").lower())
+            cleaned = re.sub(r"[^a-z0-9]+", "", (word or "").lower())
+            return _number_norm_map.get(cleaned, cleaned)
 
         def extract_text_tokens(text: str):
             tokens = []
@@ -653,36 +691,93 @@ def play_audio_files_with_status(
             return tokens
 
         def align_words_to_text(words, tokens, lookahead=12):
+            """Align transcription words to text tokens while staying monotonic.
+
+            Uses a lightweight global alignment so repeats and small mismatches don't
+            cause greedy drift.
+            """
             mapping = [None] * (len(words) if isinstance(words, list) else 0)
-            token_index = 0
             if not words or not tokens:
                 return mapping
-            for i, item in enumerate(words):
-                w = ""
+
+            word_norms = []
+            for item in words:
                 if isinstance(item, dict):
                     w = str(item.get("word", "")).strip()
                 else:
                     w = str(item).strip()
-                w_norm = normalize_for_match(w)
-                if not w_norm:
-                    continue
-                found = None
-                end = min(token_index + int(lookahead), len(tokens))
-                for j in range(token_index, end):
-                    if tokens[j].get("norm") == w_norm:
-                        found = j
-                        break
-                if found is None:
+                word_norms.append(normalize_for_match(w))
+            token_norms = [str(t.get("norm") or "") for t in tokens]
+
+            def is_match(a: str, b: str) -> bool:
+                if not a or not b:
+                    return False
+                if a == b:
+                    return True
+                if len(a) >= 4 and len(b) >= 4:
+                    return a.startswith(b) or b.startswith(a)
+                return False
+
+            n = len(word_norms)
+            m = len(token_norms)
+            if n == 0 or m == 0:
+                return mapping
+
+            # If inputs are very large, fall back to a bounded greedy scan.
+            if n * m > 600_000:
+                token_index = 0
+                for i, w_norm in enumerate(word_norms):
+                    if not w_norm:
+                        continue
+                    end = min(token_index + int(lookahead or 0), m)
+                    found = None
                     for j in range(token_index, end):
-                        t_norm = tokens[j].get("norm") or ""
-                        if not t_norm:
-                            continue
-                        if t_norm.startswith(w_norm) or w_norm.startswith(t_norm):
+                        if is_match(w_norm, token_norms[j]):
                             found = j
                             break
-                if found is not None:
-                    mapping[i] = found
-                    token_index = found + 1
+                    if found is not None:
+                        mapping[i] = found
+                        token_index = found + 1
+                return mapping
+
+            gap_penalty = 1
+            match_score = 2
+            neg_inf = -10**9
+
+            dp = [[0] * (m + 1) for _ in range(n + 1)]
+            for i in range(1, n + 1):
+                dp[i][0] = dp[i - 1][0] - gap_penalty
+            for j in range(1, m + 1):
+                dp[0][j] = dp[0][j - 1] - gap_penalty
+
+            for i in range(1, n + 1):
+                a = word_norms[i - 1]
+                row = dp[i]
+                prev_row = dp[i - 1]
+                for j in range(1, m + 1):
+                    best = max(prev_row[j] - gap_penalty, row[j - 1] - gap_penalty)
+                    b = token_norms[j - 1]
+                    if is_match(a, b):
+                        best = max(best, prev_row[j - 1] + match_score)
+                    else:
+                        best = max(best, prev_row[j - 1] + neg_inf)
+                    row[j] = best
+
+            i = n
+            j = m
+            while i > 0 and j > 0:
+                a = word_norms[i - 1]
+                b = token_norms[j - 1]
+                if is_match(a, b) and dp[i][j] == dp[i - 1][j - 1] + match_score:
+                    mapping[i - 1] = j - 1
+                    i -= 1
+                    j -= 1
+                    continue
+                if dp[i][j] == dp[i - 1][j] - gap_penalty:
+                    i -= 1
+                    continue
+                j -= 1
+
             return mapping
 
         def render_current_region(text: str, highlight_spans=None, paused=False, debug_line=None):
@@ -922,14 +1017,12 @@ def play_audio_files_with_status(
             # Show history context
             if current_index > 0:
                 prev_file, prev_text = history[current_index - 1]
-                # Just display the raw text with minimal cleaning
-                cleaned_prev = clean_text_for_display(prev_text)
+                cleaned_prev = prev_text
                 print(f"{prev_color}Previous:\n{cleaned_prev}\n{reset_color}")
     
             if 0 <= current_index < len(history):
                 audio_file, original_text_chunk = history[current_index]
-                # Just display the raw text with minimal cleaning
-                cleaned_text = clean_text_for_display(original_text_chunk)
+                cleaned_text = original_text_chunk
                 if not highlight_enabled:
                     print(f"{active_color}Current:\n{cleaned_text}\n{reset_color}")
     
@@ -941,6 +1034,14 @@ def play_audio_files_with_status(
                 last_words_status = words_status
                 tokens = None
                 word_to_token = None
+                mapping_total = 0
+                mapping_mapped = 0
+                text_debug_hash = None
+                if ui_debug:
+                    try:
+                        text_debug_hash = hashlib.sha256(cleaned_text.encode("utf-8")).hexdigest()[:10]
+                    except Exception:
+                        text_debug_hash = None
                 current_highlight_span = None
                 current_highlight_word_span = None
                 region_lines = None
@@ -972,6 +1073,9 @@ def play_audio_files_with_status(
                         pass
                     tokens = extract_text_tokens(cleaned_text)
                     word_to_token = align_words_to_text(words, tokens)
+                    if word_to_token:
+                        mapping_total = len(word_to_token)
+                        mapping_mapped = sum(1 for idx in word_to_token if idx is not None)
                     if current_word_index >= 0 and word_to_token and tokens:
                         spans = []
                         for wi in range(
@@ -1001,6 +1105,15 @@ def play_audio_files_with_status(
                         debug_log_file(f"words ready count={len(words or [])}")
                 last_words_status = words_status
                 last_debug_line = highlight_debug_info(audio_file, words_cache_path, words_status, words_error)
+                if ui_debug:
+                    try:
+                        if text_debug_hash:
+                            last_debug_line = (last_debug_line or "") + f" txt={text_debug_hash}"
+                        if mapping_total:
+                            cov = mapping_mapped / mapping_total if mapping_total else 0.0
+                            last_debug_line = (last_debug_line or "") + f" map={mapping_mapped}/{mapping_total}({cov:.0%})"
+                    except Exception:
+                        pass
                 region_lines = render_current_region(
                     cleaned_text,
                     highlight_spans=build_highlight_spans(current_highlight_span, current_highlight_word_span),
@@ -1148,12 +1261,17 @@ def play_audio_files_with_status(
                             current_word_index = -1
                             tokens = extract_text_tokens(cleaned_text)
                             word_to_token = align_words_to_text(words, tokens)
+                            if word_to_token:
+                                mapping_total = len(word_to_token)
+                                mapping_mapped = sum(1 for idx in word_to_token if idx is not None)
                         else:
                             words_status = "error"
                             words_error = payload.get("error")
                             words = None
                             tokens = None
                             word_to_token = None
+                            mapping_total = 0
+                            mapping_mapped = 0
                     playhead = max(0.0, playback_offset + (time.monotonic() - playback_started_at) - playback_lag)
                 if words:
                     while (current_word_index + 1) < len(words) and playhead >= words[current_word_index + 1].get("start", 0.0):
@@ -1197,6 +1315,29 @@ def play_audio_files_with_status(
                     if ws is not None and we is not None:
                         extra += f" ws={ws:.2f} we={we:.2f}"
                     extra += f" ctx={highlight_context_words}"
+                    if text_debug_hash:
+                        extra += f" txt={text_debug_hash}"
+                    if mapping_total:
+                        try:
+                            cov = mapping_mapped / mapping_total if mapping_total else 0.0
+                        except Exception:
+                            cov = 0.0
+                        extra += f" map={mapping_mapped}/{mapping_total}({cov:.0%})"
+                    tok_idx = None
+                    tok_text = None
+                    if word_to_token and tokens and 0 <= current_word_index < len(word_to_token):
+                        tok_idx = word_to_token[current_word_index]
+                        if tok_idx is not None and 0 <= tok_idx < len(tokens):
+                            t = tokens[tok_idx]
+                            try:
+                                tok_text = cleaned_text[t["start"]:t["end"]]
+                            except Exception:
+                                tok_text = None
+                    if tok_text:
+                        tok_text = tok_text.replace("\n", " ")
+                        if len(tok_text) > 24:
+                            tok_text = tok_text[:21] + "..."
+                        extra += f" tok={tok_text!r}"
                     debug_line = (debug_line or "") + extra
                 if (
                     new_context_span != current_highlight_span
@@ -1644,7 +1785,8 @@ def main():
         print("Clipboard is empty!")
         return
     
-    combined_texts = split_text_intelligently(clipboard_content)
+    combined_texts = [prepare_text_for_tts(t) for t in split_text_intelligently(clipboard_content)]
+    combined_texts = [t for t in combined_texts if t]
 
     # Default: interactive UI unless --stream is requested
     if not args.stream:
