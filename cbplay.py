@@ -273,7 +273,7 @@ def get_clipboard_content():
     debug_print(f"Clipboard content: {content[:100]}...")
     return content
 
-def split_text_intelligently(text, max_chars=1200):
+def split_text_intelligently(text, max_chars=600):
     """Split text into chunks without breaking the structure"""
     chunks = []
     current_chunk = ""
@@ -1693,8 +1693,8 @@ def main():
                         help='Delivery instructions sent to TTS (gpt-4o* TTS models only; empty string to disable).')
     parser.add_argument('--chunk-size',
                         type=int,
-                        default=1200,
-                        help='Max characters per clipboard chunk before TTS splitting (default: 1200).')
+                        default=600,
+                        help='Max characters per clipboard chunk before TTS splitting (default: 600).')
     parser.add_argument('--stream',
                         action='store_true',
                         help='Use async streaming playback (AsyncOpenAI + LocalAudioPlayer). Disables interactive UI.')
@@ -1800,9 +1800,9 @@ def main():
     try:
         chunk_size = int(args.chunk_size)
     except Exception:
-        chunk_size = 1200
+        chunk_size = 600
     if chunk_size <= 0:
-        chunk_size = 1200
+        chunk_size = 600
     combined_texts = [prepare_text_for_tts(t) for t in split_text_intelligently(clipboard_content, max_chars=chunk_size)]
     combined_texts = [t for t in combined_texts if t]
 
