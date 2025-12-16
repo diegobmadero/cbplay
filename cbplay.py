@@ -1472,7 +1472,22 @@ def transcribe_audio_file(audio_path, model="gpt-4o-transcribe"):
                 model=model,
                 file=audio_file,
             )
-            return response.text
+            text = None
+            if isinstance(response, dict):
+                text = response.get("text")
+            else:
+                text = getattr(response, "text", None)
+                if text is None:
+                    try:
+                        data = response.model_dump()
+                    except Exception:
+                        data = None
+                    if isinstance(data, dict):
+                        text = data.get("text")
+            if text is None:
+                print("Transcription response did not include text.")
+                return None
+            return text
     except FileNotFoundError:
         print(f"Audio file not found: {audio_path}")
         return None
@@ -1683,11 +1698,11 @@ def main():
     parser.add_argument('-a', '--audio-file',
                         help='Audio file to transcribe in stt mode. If omitted, clipboard content is treated as a path.')
     parser.add_argument('--transcription-model',
-                        default='gpt-4o-transcribe',
-                        help='Audio transcription model to use in stt mode (default: gpt-4o-transcribe)')
+                        default='gpt-4o-mini-transcribe-2025-12-15',
+                        help='Audio transcription model to use in stt mode (default: gpt-4o-mini-transcribe-2025-12-15)')
     parser.add_argument('--model',
-                        default="gpt-4o-mini-tts",
-                        help='TTS model to use (default: gpt-4o-mini-tts; legacy: tts-1-hd)')
+                        default="gpt-4o-mini-tts-2025-12-15",
+                        help='TTS model to use (default: gpt-4o-mini-tts-2025-12-15; legacy: tts-1-hd)')
     parser.add_argument('--instructions',
                         default=DEFAULT_STREAMING_INSTRUCTIONS,
                         help='Delivery instructions sent to TTS (gpt-4o* TTS models only; empty string to disable).')
