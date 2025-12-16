@@ -818,11 +818,8 @@ def play_audio_files_with_status(
 
             wrapped = hard_wrap_ansi(rendered_text, display_width)
             lines = [label_line]
-            for i, ln in enumerate(wrapped):
-                if i == len(wrapped) - 1:
-                    lines.append(f"{active_color}{ln}{reset_color}")
-                else:
-                    lines.append(f"{active_color}{ln}")
+            # Keep body text in default terminal color; only highlight spans add styling.
+            lines.extend(wrapped)
             lines.append(reset_color)
             if debug_line:
                 lines.append(f"{info_color}{debug_line}{reset_color}")
@@ -1032,7 +1029,7 @@ def play_audio_files_with_status(
                 audio_file, original_text_chunk = history[current_index]
                 cleaned_text = original_text_chunk
                 if not highlight_enabled:
-                    print(f"{active_color}Current:\n{cleaned_text}\n{reset_color}")
+                    print(f"{active_color}Current:{reset_color}\n{cleaned_text}\n")
     
                 words_cache_path = None
                 words = None
