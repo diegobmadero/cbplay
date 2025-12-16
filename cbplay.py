@@ -825,8 +825,15 @@ def play_audio_files_with_status(
                 lines.append(f"{info_color}{debug_line}{reset_color}")
             return lines
 
-        def build_highlight_spans(context_span, current_word_span):
+        def build_highlight_spans(context_span, current_word_span, dim_span=None):
             spans = []
+            if dim_span and isinstance(dim_span, (tuple, list)) and len(dim_span) == 2:
+                try:
+                    start, end = int(dim_span[0]), int(dim_span[1])
+                except Exception:
+                    start, end = None, None
+                if start is not None and end is not None and 0 <= start < end:
+                    spans.append((start, end, "\033[2m", "\033[22m"))  # dim
             if context_span and isinstance(context_span, (tuple, list)) and len(context_span) == 2:
                 try:
                     start, end = int(context_span[0]), int(context_span[1])
@@ -1049,6 +1056,7 @@ def play_audio_files_with_status(
                         text_debug_hash = None
                 current_highlight_span = None
                 current_highlight_word_span = None
+                current_dim_span = None
                 region_lines = None
                 region_line_count = 0
                 last_debug_line = None
@@ -1098,6 +1106,8 @@ def play_audio_files_with_status(
                         if token_idx is not None and 0 <= token_idx < len(tokens):
                             t = tokens[token_idx]
                             current_highlight_word_span = (t["start"], t["end"])
+                            if t["start"] > 0:
+                                current_dim_span = (0, t["start"])
                 if words_status == "ok":
                     try:
                         first_word = words[0] if words else None
@@ -1121,7 +1131,7 @@ def play_audio_files_with_status(
                         pass
                 region_lines = render_current_region(
                     cleaned_text,
-                    highlight_spans=build_highlight_spans(current_highlight_span, current_highlight_word_span),
+                    highlight_spans=build_highlight_spans(current_highlight_span, current_highlight_word_span, current_dim_span),
                     paused=False,
                     debug_line=last_debug_line,
                 )
@@ -1287,6 +1297,7 @@ def play_audio_files_with_status(
                         debug_log_file(f"word rewind -> idx={current_word_index} playhead={playhead:.3f}")
                 new_context_span = None
                 new_word_span = None
+                new_dim_span = None
                 if words and word_to_token and tokens and current_word_index >= 0:
                     spans = []
                     for wi in range(
@@ -1304,6 +1315,8 @@ def play_audio_files_with_status(
                     if token_idx is not None and 0 <= token_idx < len(tokens):
                         t = tokens[token_idx]
                         new_word_span = (t["start"], t["end"])
+                        if t["start"] > 0:
+                            new_dim_span = (0, t["start"])
                 debug_line = highlight_debug_info(audio_file, words_cache_path, words_status, words_error)
                 if ui_debug and words and current_word_index >= 0:
                     try:
@@ -1347,19 +1360,21 @@ def play_audio_files_with_status(
                 if (
                     new_context_span != current_highlight_span
                     or new_word_span != current_highlight_word_span
+                    or new_dim_span != current_dim_span
                     or words_status != last_words_status
                     or debug_line != last_debug_line
                     or paused != last_paused_state
                 ):
                     current_highlight_span = new_context_span
                     current_highlight_word_span = new_word_span
+                    current_dim_span = new_dim_span
                     last_words_status = words_status
                     last_debug_line = debug_line
                     last_paused_state = paused
                     if region_lines is not None:
                         region_lines = render_current_region(
                             cleaned_text,
-                            highlight_spans=build_highlight_spans(current_highlight_span, current_highlight_word_span),
+                            highlight_spans=build_highlight_spans(current_highlight_span, current_highlight_word_span, current_dim_span),
                             paused=paused,
                             debug_line=debug_line,
                         )
