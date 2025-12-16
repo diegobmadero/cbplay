@@ -1703,6 +1703,9 @@ def main():
     parser.add_argument('--model',
                         default="gpt-4o-mini-tts-2025-12-15",
                         help='TTS model to use (default: gpt-4o-mini-tts-2025-12-15; legacy: tts-1-hd)')
+    parser.add_argument('--highlight-tts-model',
+                        default=None,
+                        help='TTS model to use when --highlight is enabled (default: gpt-4o-mini-tts-2025-12-15).')
     parser.add_argument('--instructions',
                         default=DEFAULT_STREAMING_INSTRUCTIONS,
                         help='Delivery instructions sent to TTS (gpt-4o* TTS models only; empty string to disable).')
@@ -1743,6 +1746,13 @@ def main():
                         help='When set (or implied by --debug), append detailed diagnostics to this file (default: debug_cbplay.log in CWD).')
     args = parser.parse_args()
 
+    if args.highlight and not args.highlight_tts_model:
+        args.highlight_tts_model = "gpt-4o-mini-tts-2025-12-15"
+
+    if args.highlight and args.highlight_model != "whisper-1":
+        print("Note: word-level timestamps currently require whisper-1; overriding --highlight-model to whisper-1.")
+        args.highlight_model = "whisper-1"
+
     # Configure debug file logging
     global DEBUG_FILE
     if args.debug_file or args.debug:
@@ -1758,10 +1768,6 @@ def main():
     if args.stream and args.highlight:
         print("--highlight is only supported in interactive UI. Remove --stream to use highlighting.")
         return
-
-    if args.highlight and args.highlight_model != "whisper-1":
-        print("Note: word-level timestamps currently require whisper-1; overriding --highlight-model to whisper-1.")
-        args.highlight_model = "whisper-1"
     
     signal.signal(signal.SIGINT, graceful_exit)
 
@@ -1823,7 +1829,8 @@ def main():
 
     # Default: interactive UI unless --stream is requested
     if not args.stream:
-        run_interactive_tts_flow(clipboard_content, combined_texts, args, args.model)
+        tts_model = args.highlight_tts_model if args.highlight else args.model
+        run_interactive_tts_flow(clipboard_content, combined_texts, args, tts_model)
         return
 
     # Streaming path (falls back to interactive UI on errors)
