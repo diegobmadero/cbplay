@@ -34,8 +34,8 @@ DEBUG = os.getenv('DEBUG') == '1'
 DEBUG_FILE = None
 _AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".webm", ".opus"}
 DEFAULT_STREAMING_INSTRUCTIONS = """
-Accent/Affect: Warm, refined, and gently instructive, reminiscent of a friendly art instructor.
-Tone: Calm, encouraging, and articulate, clearly describing each step with patience.
+Accent/Affect: Warm, refined, and gently instructive, reminiscent of a friendly engaging, fun instructor.
+Tone: Calm, encouraging, engaging, fun, and articulate, clearly describing each step with patience.
 Pacing: Slow and deliberate, pausing often to allow the listener to follow instructions comfortably. Pause between paragraphs to allow the reader to digest the info.
 Emotion: Cheerful, supportive, and pleasantly enthusiastic; convey genuine enjoyment and appreciation of art.
 Pronunciation: Clearly articulate artistic terminology (e.g., "brushstrokes," "landscape," "palette") with gentle emphasis.
@@ -209,15 +209,31 @@ class TTSFile:
                 retry_count += 1
                 wait_time = min(2 ** retry_count, 30)  # Exponential backoff
                 print(f"Rate limit error, waiting {wait_time}s (attempt {retry_count}/{max_retries})")
+                debug_log_file(f"TTS RateLimitError attempt={retry_count}: {e}")
+                time.sleep(wait_time)
+            except openai.APIConnectionError as e:
+                retry_count += 1
+                wait_time = min(2 ** retry_count, 30)
+                print(f"Connection error, waiting {wait_time}s (attempt {retry_count}/{max_retries}): {e}")
+                debug_log_file(f"TTS APIConnectionError attempt={retry_count}: {type(e).__name__} {e}")
+                time.sleep(wait_time)
+            except openai.APITimeoutError as e:
+                retry_count += 1
+                wait_time = min(2 ** retry_count, 30)
+                print(f"Timeout error, waiting {wait_time}s (attempt {retry_count}/{max_retries}): {e}")
+                debug_log_file(f"TTS APITimeoutError attempt={retry_count}: {type(e).__name__} {e}")
                 time.sleep(wait_time)
             except openai.BadRequestError as e:
                 print(f"Failed to generate audio due to bad request: {e}")
+                debug_log_file(f"TTS BadRequestError: {e}")
                 return None
             except Exception as e:
                 print(f"Failed to generate audio due to error: {e}")
+                debug_log_file(f"TTS Exception: {type(e).__name__} {e}")
                 return None
         else:
             print(f"Failed to generate audio after {max_retries} attempts")
+            debug_log_file(f"TTS failed after {max_retries} retries")
             return None
         
         with open(out_file, "wb") as file:
@@ -620,7 +636,72 @@ def play_audio_files_with_status(
 
         import re
         ansi_escape_re = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
-        token_re = re.compile(r"[A-Za-z0-9]+(?:['’][A-Za-z0-9]+)*")
+        token_re = re.compile(r"[A-Za-z0-9]+(?:[''][A-Za-z0-9]+)*")
+
+        # Box-drawing characters and UI helpers
+        BOX_TL, BOX_TR, BOX_BL, BOX_BR = '╭', '╮', '╰', '╯'
+        BOX_H, BOX_V = '─', '│'
+
+        def visible_len(s: str) -> int:
+            """Return visible length of string (excluding ANSI codes)."""
+            return len(ansi_escape_re.sub('', s))
+
+        def draw_box_top(title: str, width: int, color: str = '') -> str:
+            """Draw top of a box with optional title."""
+            reset = reset_color if color else ''
+            title_part = f" {title} " if title else BOX_H
+            remaining = width - 2 - visible_len(title_part)
+            left_pad = 1
+            right_pad = remaining - left_pad
+            return f"{color}{BOX_TL}{BOX_H * left_pad}{title_part}{BOX_H * max(0, right_pad)}{BOX_TR}{reset}"
+
+        def draw_box_bottom(width: int, color: str = '') -> str:
+            """Draw bottom of a box."""
+            reset = reset_color if color else ''
+            return f"{color}{BOX_BL}{BOX_H * (width - 2)}{BOX_BR}{reset}"
+
+        def draw_box_line(content: str, width: int, color: str = '', content_color: str = '') -> str:
+            """Draw a line inside a box, padding to width."""
+            reset = reset_color if color else ''
+            content_reset = reset_color if content_color else ''
+            inner_width = width - 4  # Account for "│ " and " │"
+            vis_len = visible_len(content)
+            padding = max(0, inner_width - vis_len)
+            return f"{color}{BOX_V}{reset} {content_color}{content}{content_reset}{' ' * padding} {color}{BOX_V}{reset}"
+
+        def wrap_text_for_box(text: str, inner_width: int) -> list:
+            """Wrap text to fit inside a box, preserving ANSI codes."""
+            lines = []
+            for line in text.split('\n'):
+                if not line:
+                    lines.append('')
+                    continue
+                # Simple word wrap
+                words = line.split(' ')
+                current_line = ''
+                for word in words:
+                    test_line = f"{current_line} {word}".strip() if current_line else word
+                    if visible_len(test_line) <= inner_width:
+                        current_line = test_line
+                    else:
+                        if current_line:
+                            lines.append(current_line)
+                        current_line = word
+                        # Handle words longer than inner_width
+                        while visible_len(current_line) > inner_width:
+                            lines.append(current_line[:inner_width])
+                            current_line = current_line[inner_width:]
+                if current_line:
+                    lines.append(current_line)
+            return lines if lines else ['']
+
+        def render_progress_bar(current: float, total: float, width: int = 20) -> str:
+            """Render a compact progress bar."""
+            if total <= 0:
+                return '░' * width
+            ratio = min(1.0, max(0.0, current / total))
+            filled = int(width * ratio)
+            return '█' * filled + '░' * (width - filled)
 
         def hard_wrap_ansi(text: str, width: int):
             if width <= 0:
@@ -788,11 +869,20 @@ def play_audio_files_with_status(
 
             return mapping
 
-        def render_current_region(text: str, highlight_spans=None, paused=False, debug_line=None):
-            label = "Current"
+        def render_current_region(text: str, highlight_spans=None, paused=False, debug_line=None,
+                                   chunk_index=0, total_chunks=0, playhead=0.0, duration=0.0):
+            """Render the current text section in a nice box with karaoke highlighting."""
+            # Build title with chunk info and status
+            status_icon = "⏸" if paused else "▶"
+            if total_chunks > 0:
+                title = f"{status_icon} Now Playing [{chunk_index + 1}/{total_chunks}]"
+            else:
+                title = f"{status_icon} Now Playing"
             if paused:
-                label += " [PAUSED]"
-            label_line = f"{active_color}{label}:{reset_color}"
+                title += " PAUSED"
+
+            box_width = min(display_width, term_width - 2)
+            inner_width = box_width - 4  # Account for box borders and padding
 
             rendered_text = text or ""
             if highlight_spans:
@@ -816,24 +906,50 @@ def play_audio_files_with_status(
                     if 0 <= idx <= len(rendered_text):
                         rendered_text = rendered_text[:idx] + "".join(events[idx]) + rendered_text[idx:]
 
-            wrapped = hard_wrap_ansi(rendered_text, display_width)
-            lines = [label_line]
-            # Keep body text in default terminal color; only highlight spans add styling.
-            lines.extend(wrapped)
-            lines.append(reset_color)
+            # Build the box
+            box_color = active_color
+            lines = []
+            lines.append(draw_box_top(title, box_width, box_color))
+
+            # Wrap and add text lines
+            wrapped_lines = wrap_text_for_box(rendered_text, inner_width)
+            for line in wrapped_lines:
+                lines.append(draw_box_line(line, box_width, box_color))
+
+            # Add progress bar if we have duration info
+            if duration > 0:
+                progress = render_progress_bar(playhead, duration, width=min(30, inner_width - 10))
+                time_str = f"{playhead:.1f}s / {duration:.1f}s"
+                progress_line = f"{progress}  {time_str}"
+                lines.append(draw_box_line("", box_width, box_color))  # Empty line
+                lines.append(draw_box_line(progress_line, box_width, box_color, info_color))
+
+            lines.append(draw_box_bottom(box_width, box_color))
+
             if debug_line:
                 lines.append(f"{info_color}{debug_line}{reset_color}")
             return lines
 
         def build_highlight_spans(context_span, current_word_span, dim_span=None):
+            """Build karaoke-style highlighting spans.
+
+            Style:
+            - Already spoken (dim_span): dim grey text
+            - Context window: subtle underline
+            - Current word: bold + bright cyan background (reverse video)
+            """
             spans = []
+            # Dim already-spoken text (grey + dim)
             if dim_span and isinstance(dim_span, (tuple, list)) and len(dim_span) == 2:
                 try:
                     start, end = int(dim_span[0]), int(dim_span[1])
                 except Exception:
                     start, end = None, None
                 if start is not None and end is not None and 0 <= start < end:
-                    spans.append((start, end, "\033[2m", "\033[22m"))  # dim
+                    # Dim + grey color for spoken text
+                    spans.append((start, end, "\033[2;90m", "\033[22;39m"))
+
+            # Context window - subtle underline
             if context_span and isinstance(context_span, (tuple, list)) and len(context_span) == 2:
                 try:
                     start, end = int(context_span[0]), int(context_span[1])
@@ -841,14 +957,67 @@ def play_audio_files_with_status(
                     start, end = None, None
                 if start is not None and end is not None and 0 <= start < end:
                     spans.append((start, end, "\033[4m", "\033[24m"))  # underline
+
+            # Current word - bold + reverse video with cyan
             if current_word_span and isinstance(current_word_span, (tuple, list)) and len(current_word_span) == 2:
                 try:
                     start, end = int(current_word_span[0]), int(current_word_span[1])
                 except Exception:
                     start, end = None, None
                 if start is not None and end is not None and 0 <= start < end:
-                    spans.append((start, end, "\033[7m", "\033[27m"))  # reverse video
+                    # Bold + cyan background (reverse) + white text
+                    spans.append((start, end, "\033[1;7;96m", "\033[22;27;39m"))
             return spans if spans else None
+
+        def render_previous_section(text: str, max_lines: int = 4) -> list:
+            """Render the previous chunk in a compact dimmed box."""
+            if not text:
+                return []
+
+            box_width = min(display_width, term_width - 2)
+            inner_width = box_width - 4
+
+            lines = []
+            lines.append(draw_box_top("Previous", box_width, prev_color))
+
+            wrapped = wrap_text_for_box(text, inner_width)
+            # Limit to max_lines, show truncation indicator if needed
+            if len(wrapped) > max_lines:
+                wrapped = wrapped[:max_lines - 1] + [f"... ({len(wrapped) - max_lines + 1} more lines)"]
+
+            for line in wrapped:
+                lines.append(draw_box_line(line, box_width, prev_color, prev_color))
+
+            lines.append(draw_box_bottom(box_width, prev_color))
+            return lines
+
+        def render_controls_bar(paused: bool = False) -> str:
+            """Render a compact controls bar."""
+            if paused:
+                controls = "␣ Resume  │  ↑↓ Navigate  │  Q/Esc Exit"
+            else:
+                controls = "␣ Pause  │  ↑↓ Navigate  │  Q/Esc Exit"
+            return f"{info_color}{controls}{reset_color}"
+
+        def get_audio_duration(audio_path) -> float:
+            """Get audio duration using ffprobe if available, otherwise estimate."""
+            try:
+                result = subprocess.run(
+                    ['ffprobe', '-v', 'quiet', '-show_entries', 'format=duration',
+                     '-of', 'default=noprint_wrappers=1:nokey=1', str(audio_path)],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    return float(result.stdout.strip())
+            except Exception:
+                pass
+            # Fallback: estimate based on file size (rough estimate for AAC/MP3)
+            try:
+                size = Path(audio_path).stat().st_size
+                # Assume ~16KB/s for compressed audio
+                return size / 16000
+            except Exception:
+                return 0.0
 
         def redraw_region(lines, line_count):
             if not lines:
@@ -963,16 +1132,9 @@ def play_audio_files_with_status(
                 bar = '█' * filled + '░' * (bar_length - filled)
                 print(f"Generating: [{bar}] {percent:.0f}% ({generated_chunks}/{total_chunks})\n")
             
-            # Show controls and status
-            if 0 <= current_index < len(history):
-                queue_status = f"Playing {current_index + 1}"
-                if generation_done:
-                    queue_status += f"/{total_chunks}" if total_chunks > 0 else f"/{len(history)}"
-                else:
-                    queue_status += f"/{len(history)}+ (generating...)"
-                print(f"{info_color}{queue_status} | Controls: ↑/↓ - Navigate | Space - Pause/Resume | Q or ESC - Exit | Auto-advances when ready{reset_color}\n")
-            else:
-                print(f"{info_color}Controls: ↑/↓ - Navigate | Space - Pause/Resume | Q or ESC - Exit | Auto-advances when ready{reset_color}\n")
+            # Show compact controls bar
+            print(render_controls_bar(paused=False))
+            print()  # Spacing
             
             # Get next audio if available and we're at the end
             debug_print(f"Loop iteration: current_index={current_index}, history_len={len(history)}, queue_empty={audio_queue.empty()}")
@@ -1026,17 +1188,31 @@ def play_audio_files_with_status(
                     time.sleep(0.2)
                     continue
 
-            # Show history context
+            # Show history context (Previous section in a compact box)
             if current_index > 0:
                 prev_file, prev_text = history[current_index - 1]
-                cleaned_prev = prev_text
-                print(f"{prev_color}Previous:\n{cleaned_prev}\n{reset_color}")
+                prev_lines = render_previous_section(prev_text, max_lines=4)
+                for line in prev_lines:
+                    print(line)
+                print()  # Spacing between Previous and Current
     
             if 0 <= current_index < len(history):
                 audio_file, original_text_chunk = history[current_index]
                 cleaned_text = original_text_chunk
+                audio_duration = get_audio_duration(audio_file)
+                effective_total = total_chunks if total_chunks > 0 else len(history)
+
                 if not highlight_enabled:
-                    print(f"{active_color}Current:{reset_color}\n{cleaned_text}\n")
+                    # Non-highlight mode: simple box display
+                    simple_lines = render_current_region(
+                        cleaned_text,
+                        chunk_index=current_index,
+                        total_chunks=effective_total,
+                        playhead=0.0,
+                        duration=audio_duration,
+                    )
+                    for line in simple_lines:
+                        print(line)
     
                 words_cache_path = None
                 words = None
@@ -1134,6 +1310,10 @@ def play_audio_files_with_status(
                     highlight_spans=build_highlight_spans(current_highlight_span, current_highlight_word_span, current_dim_span),
                     paused=False,
                     debug_line=last_debug_line,
+                    chunk_index=current_index,
+                    total_chunks=effective_total,
+                    playhead=0.0,
+                    duration=audio_duration,
                 )
                 region_line_count = len(region_lines)
                 for i, ln in enumerate(region_lines):
@@ -1148,6 +1328,7 @@ def play_audio_files_with_status(
             process = start_player(audio_file, start_at=playback_offset)
             playback_started_at = time.monotonic()
             playback_lag = playhead_lag_seconds
+            playhead = 0.0  # Current playhead position
             paused_at = None  # Playhead position when paused
             user_interrupted = False
             paused = False
@@ -1193,6 +1374,10 @@ def play_audio_files_with_status(
                                     highlight_spans=build_highlight_spans(current_highlight_span, current_highlight_word_span),
                                     paused=False,
                                     debug_line=debug_line,
+                                    chunk_index=current_index,
+                                    total_chunks=effective_total,
+                                    playhead=playback_offset,
+                                    duration=audio_duration,
                                 )
                                 redraw_region(region_lines, region_line_count)
                                 last_paused_state = False
@@ -1210,6 +1395,10 @@ def play_audio_files_with_status(
                                     highlight_spans=build_highlight_spans(current_highlight_span, current_highlight_word_span),
                                     paused=True,
                                     debug_line=debug_line,
+                                    chunk_index=current_index,
+                                    total_chunks=effective_total,
+                                    playhead=current_playhead,
+                                    duration=audio_duration,
                                 )
                                 redraw_region(region_lines, region_line_count)
                                 last_paused_state = True
@@ -1377,6 +1566,10 @@ def play_audio_files_with_status(
                             highlight_spans=build_highlight_spans(current_highlight_span, current_highlight_word_span, current_dim_span),
                             paused=paused,
                             debug_line=debug_line,
+                            chunk_index=current_index,
+                            total_chunks=effective_total,
+                            playhead=playhead,
+                            duration=audio_duration,
                         )
                     redraw_region(region_lines, region_line_count)
                     debug_log_file(f"highlight update word_idx={current_word_index} span={current_highlight_span} status={words_status}")
@@ -1477,6 +1670,7 @@ def is_audio_file(path: Path):
 
 def transcribe_audio_file(audio_path, model="gpt-4o-transcribe"):
     """Transcribe a local audio file using the Audio API"""
+    debug_log_file(f"transcribe_audio_file start path={audio_path} model={model}")
     client = OpenAI(timeout=300)
     try:
         with open(audio_path, "rb") as audio_file:
@@ -1498,19 +1692,33 @@ def transcribe_audio_file(audio_path, model="gpt-4o-transcribe"):
                         text = data.get("text")
             if text is None:
                 print("Transcription response did not include text.")
+                debug_log_file("transcribe_audio_file: response missing text")
                 return None
+            debug_log_file(f"transcribe_audio_file success len={len(text)}")
             return text
     except FileNotFoundError:
         print(f"Audio file not found: {audio_path}")
+        debug_log_file(f"transcribe_audio_file FileNotFoundError: {audio_path}")
         return None
     except openai.BadRequestError as e:
         print(f"Failed to transcribe audio due to bad request: {e}")
+        debug_log_file(f"transcribe_audio_file BadRequestError: {e}")
         return None
     except openai.RateLimitError as e:
         print(f"Rate limit error during transcription: {e}")
+        debug_log_file(f"transcribe_audio_file RateLimitError: {e}")
+        return None
+    except openai.APIConnectionError as e:
+        print(f"Connection error during transcription: {e}")
+        debug_log_file(f"transcribe_audio_file APIConnectionError: {type(e).__name__} {e}")
+        return None
+    except openai.APITimeoutError as e:
+        print(f"Timeout error during transcription: {e}")
+        debug_log_file(f"transcribe_audio_file APITimeoutError: {type(e).__name__} {e}")
         return None
     except Exception as e:
         print(f"Failed to transcribe audio due to error: {e}")
+        debug_log_file(f"transcribe_audio_file Exception: {type(e).__name__} {e}")
         return None
 
 def load_word_timestamps(cache_path: Path, expected_model=None):
@@ -1576,6 +1784,7 @@ def save_word_timestamps(cache_path: Path, transcription_model: str, words, stat
 
 def transcribe_audio_words(audio_path: Path, model: str = "gpt-4o-transcribe", timeout: int = 300):
     """Return word-level timestamps for an audio file (requires a model that supports verbose_json + word timestamps)."""
+    debug_log_file(f"transcribe_audio_words start path={audio_path} model={model}")
     client = OpenAI(timeout=timeout)
     try:
         with open(audio_path, "rb") as audio_file:
@@ -1585,8 +1794,17 @@ def transcribe_audio_words(audio_path: Path, model: str = "gpt-4o-transcribe", t
                 response_format="verbose_json",
                 timestamp_granularities=["word"],
             )
+    except openai.APIConnectionError as e:
+        debug_print(f"Word-timestamp transcription connection error: {e}")
+        debug_log_file(f"transcribe_audio_words APIConnectionError: {type(e).__name__} {e}")
+        return None
+    except openai.APITimeoutError as e:
+        debug_print(f"Word-timestamp transcription timeout: {e}")
+        debug_log_file(f"transcribe_audio_words APITimeoutError: {type(e).__name__} {e}")
+        return None
     except Exception as e:
         debug_print(f"Word-timestamp transcription failed: {e}")
+        debug_log_file(f"transcribe_audio_words Exception: {type(e).__name__} {e}")
         return None
 
     data = response
