@@ -252,22 +252,106 @@ class TTSFile:
         debug_print(f"Generated audio file at: {out_file}")
         return out_file
 
-def clean_text_for_display(text):
-    """Minimal text cleaning - just remove the worst formatting artifacts"""
+def _render_markdown_table(lines):
+    """Convert markdown table lines to cleaner box-drawing format."""
     import re
-    
-    # Remove box drawing characters
-    text = re.sub(r'[│├└─┌┐┘┤┬┴┼╭╮╯╰╱╲╳]', '', text)
-    
+    if not lines:
+        return lines
+
+    # Parse cells from each row
+    rows = []
+    for line in lines:
+        # Skip separator lines (|---|---|)
+        if re.match(r'^\|[-:\s|]+\|$', line):
+            continue
+        # Extract cells
+        cells = [c.strip() for c in line.strip('|').split('|')]
+        if cells:
+            rows.append(cells)
+
+    if not rows:
+        return lines
+
+    # Calculate column widths
+    col_count = max(len(row) for row in rows)
+    col_widths = [0] * col_count
+    for row in rows:
+        for i, cell in enumerate(row):
+            if i < col_count:
+                col_widths[i] = max(col_widths[i], len(cell))
+
+    # Render with box characters
+    result = []
+    h_line = '─'
+    for i, row in enumerate(rows):
+        # Pad cells to column width
+        padded = []
+        for j, cell in enumerate(row):
+            width = col_widths[j] if j < len(col_widths) else len(cell)
+            padded.append(cell.ljust(width))
+        # Join with thin separator
+        result.append('  ' + '  │  '.join(padded))
+        # Add separator after header row
+        if i == 0 and len(rows) > 1:
+            sep_parts = [h_line * w for w in col_widths[:len(row)]]
+            result.append('  ' + '──┼──'.join(sep_parts))
+
+    return result
+
+
+def clean_text_for_display(text):
+    """Clean text for display - remove formatting artifacts and render markdown"""
+    import re
+
+    # Remove box drawing characters (except our own table rendering)
+    text = re.sub(r'[├└┌┐┘┤┬┴┼╭╮╯╰╱╲╳]', '', text)
+
     # Remove excessive asterisks (more than 10 in a row)
     text = re.sub(r'\*{10,}', '', text)
-    
+
+    # Strip markdown bold/italic markers: **bold** -> bold, *italic* -> italic
+    # Handle **bold** first (greedy)
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
+    # Handle *italic* (but not bullet points at line start)
+    text = re.sub(r'(?<!^)(?<!\n)\*([^*\n]+)\*', r'\1', text)
+    # Handle __bold__ and _italic_
+    text = re.sub(r'__([^_]+)__', r'\1', text)
+    text = re.sub(r'(?<!^)(?<!\n)_([^_\n]+)_', r'\1', text)
+
+    # Clean markdown headers: ### Header -> Header
+    text = re.sub(r'^#{1,6}\s*', '', text, flags=re.MULTILINE)
+
+    # Process markdown tables
+    lines = text.split('\n')
+    result_lines = []
+    table_buffer = []
+    in_table = False
+
+    for line in lines:
+        is_table_line = bool(re.match(r'^\s*\|.*\|\s*$', line))
+        if is_table_line:
+            table_buffer.append(line)
+            in_table = True
+        else:
+            if in_table and table_buffer:
+                # Render accumulated table
+                result_lines.extend(_render_markdown_table(table_buffer))
+                table_buffer = []
+                in_table = False
+            result_lines.append(line)
+
+    # Handle table at end of text
+    if table_buffer:
+        result_lines.extend(_render_markdown_table(table_buffer))
+
+    text = '\n'.join(result_lines)
+
     # Clean up excessive newlines (more than 3)
     text = re.sub(r'\n{4,}', '\n\n\n', text)
-    
+
     # Remove trailing whitespace from lines
     lines = [line.rstrip() for line in text.split('\n')]
-    
+
     return '\n'.join(lines)
 
 def prepare_text_for_tts(text: str) -> str:
@@ -934,20 +1018,20 @@ def play_audio_files_with_status(
             """Build karaoke-style highlighting spans.
 
             Style:
-            - Already spoken (dim_span): dim grey text
+            - Already spoken (dim_span): dark grey, clearly "used up"
             - Context window: subtle underline
             - Current word: bold + bright cyan background (reverse video)
             """
             spans = []
-            # Dim already-spoken text (grey + dim)
+            # Dim already-spoken text - darker grey (38;5;240 is a dark grey from 256-color palette)
             if dim_span and isinstance(dim_span, (tuple, list)) and len(dim_span) == 2:
                 try:
                     start, end = int(dim_span[0]), int(dim_span[1])
                 except Exception:
                     start, end = None, None
                 if start is not None and end is not None and 0 <= start < end:
-                    # Dim + grey color for spoken text
-                    spans.append((start, end, "\033[2;90m", "\033[22;39m"))
+                    # Dark grey from 256-color palette for clearly "spoken" text
+                    spans.append((start, end, "\033[38;5;242m", "\033[39m"))
 
             # Context window - subtle underline
             if context_span and isinstance(context_span, (tuple, list)) and len(context_span) == 2:
@@ -991,12 +1075,53 @@ def play_audio_files_with_status(
             lines.append(draw_box_bottom(box_width, prev_color))
             return lines
 
-        def render_controls_bar(paused: bool = False) -> str:
-            """Render a compact controls bar."""
+        def render_minimap(current_idx: int, total: int, max_dots: int = 20) -> str:
+            """Render a mini-map showing position in chunks: ○○●○○"""
+            if total <= 0:
+                return ""
+            if total <= max_dots:
+                # Show all chunks as dots
+                dots = []
+                for i in range(total):
+                    if i == current_idx:
+                        dots.append("●")
+                    else:
+                        dots.append("○")
+                return "".join(dots)
+            else:
+                # Compress: show start...current...end
+                # Show first 3, current context, last 3
+                result = []
+                for i in range(min(3, total)):
+                    result.append("●" if i == current_idx else "○")
+                if current_idx > 4:
+                    result.append("…")
+                # Show current and neighbors if in middle
+                if 3 <= current_idx < total - 3:
+                    for i in range(max(3, current_idx - 1), min(total - 3, current_idx + 2)):
+                        result.append("●" if i == current_idx else "○")
+                if current_idx < total - 5:
+                    result.append("…")
+                for i in range(max(total - 3, 0), total):
+                    if i > current_idx + 1 or i < 3:
+                        continue
+                    result.append("●" if i == current_idx else "○")
+                # Ensure we show last 3
+                for i in range(max(total - 3, current_idx + 2), total):
+                    result.append("●" if i == current_idx else "○")
+                return "".join(result)
+
+        def render_controls_bar(paused: bool = False, chunk_idx: int = 0, total_chunks: int = 0) -> str:
+            """Render a compact controls bar with optional mini-map."""
             if paused:
                 controls = "␣ Resume  │  ↑↓ Navigate  │  Q/Esc Exit"
             else:
                 controls = "␣ Pause  │  ↑↓ Navigate  │  Q/Esc Exit"
+
+            # Add mini-map if we have multiple chunks
+            if total_chunks > 1:
+                minimap = render_minimap(chunk_idx, total_chunks)
+                return f"{info_color}{minimap}  {controls}{reset_color}"
             return f"{info_color}{controls}{reset_color}"
 
         def get_audio_duration(audio_path) -> float:
@@ -1132,8 +1257,9 @@ def play_audio_files_with_status(
                 bar = '█' * filled + '░' * (bar_length - filled)
                 print(f"Generating: [{bar}] {percent:.0f}% ({generated_chunks}/{total_chunks})\n")
             
-            # Show compact controls bar
-            print(render_controls_bar(paused=False))
+            # Show compact controls bar with mini-map
+            effective_total = total_chunks if total_chunks > 0 else len(history)
+            print(render_controls_bar(paused=False, chunk_idx=max(0, current_index), total_chunks=effective_total))
             print()  # Spacing
             
             # Get next audio if available and we're at the end
@@ -1923,8 +2049,8 @@ def main():
     parser.add_argument('-v', '--voice', 
                         choices=['alloy', 'ash', 'ballad', 'coral', 'echo', 'fable', 
                                  'nova', 'onyx', 'sage', 'shimmer', 'verse'],
-                        default='nova',
-                        help='Voice to use for text-to-speech (default: nova)')
+                        default='verse',
+                        help='Voice to use for text-to-speech (default: verse)')
     parser.add_argument('-a', '--audio-file',
                         help='Audio file to transcribe in stt mode. If omitted, clipboard content is treated as a path.')
     parser.add_argument('--transcription-model',
