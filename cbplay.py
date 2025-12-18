@@ -252,99 +252,15 @@ class TTSFile:
         debug_print(f"Generated audio file at: {out_file}")
         return out_file
 
-def _render_markdown_table(lines):
-    """Convert markdown table lines to cleaner box-drawing format."""
-    import re
-    if not lines:
-        return lines
-
-    # Parse cells from each row
-    rows = []
-    for line in lines:
-        # Skip separator lines (|---|---|)
-        if re.match(r'^\|[-:\s|]+\|$', line):
-            continue
-        # Extract cells
-        cells = [c.strip() for c in line.strip('|').split('|')]
-        if cells:
-            rows.append(cells)
-
-    if not rows:
-        return lines
-
-    # Calculate column widths
-    col_count = max(len(row) for row in rows)
-    col_widths = [0] * col_count
-    for row in rows:
-        for i, cell in enumerate(row):
-            if i < col_count:
-                col_widths[i] = max(col_widths[i], len(cell))
-
-    # Render with box characters
-    result = []
-    h_line = '─'
-    for i, row in enumerate(rows):
-        # Pad cells to column width
-        padded = []
-        for j, cell in enumerate(row):
-            width = col_widths[j] if j < len(col_widths) else len(cell)
-            padded.append(cell.ljust(width))
-        # Join with thin separator
-        result.append('  ' + '  │  '.join(padded))
-        # Add separator after header row
-        if i == 0 and len(rows) > 1:
-            sep_parts = [h_line * w for w in col_widths[:len(row)]]
-            result.append('  ' + '──┼──'.join(sep_parts))
-
-    return result
-
-
 def clean_text_for_display(text):
-    """Clean text for display - remove formatting artifacts and render markdown"""
+    """Minimal text cleaning - just remove the worst formatting artifacts"""
     import re
 
-    # Remove box drawing characters (except our own table rendering)
+    # Remove box drawing characters that might interfere with our rendering
     text = re.sub(r'[├└┌┐┘┤┬┴┼╭╮╯╰╱╲╳]', '', text)
 
     # Remove excessive asterisks (more than 10 in a row)
     text = re.sub(r'\*{10,}', '', text)
-
-    # Strip markdown bold/italic markers: **bold** -> bold, *italic* -> italic
-    # Handle **bold** first (greedy)
-    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
-    # Handle *italic* (but not bullet points at line start)
-    text = re.sub(r'(?<!^)(?<!\n)\*([^*\n]+)\*', r'\1', text)
-    # Handle __bold__ and _italic_
-    text = re.sub(r'__([^_]+)__', r'\1', text)
-    text = re.sub(r'(?<!^)(?<!\n)_([^_\n]+)_', r'\1', text)
-
-    # Clean markdown headers: ### Header -> Header
-    text = re.sub(r'^#{1,6}\s*', '', text, flags=re.MULTILINE)
-
-    # Process markdown tables
-    lines = text.split('\n')
-    result_lines = []
-    table_buffer = []
-    in_table = False
-
-    for line in lines:
-        is_table_line = bool(re.match(r'^\s*\|.*\|\s*$', line))
-        if is_table_line:
-            table_buffer.append(line)
-            in_table = True
-        else:
-            if in_table and table_buffer:
-                # Render accumulated table
-                result_lines.extend(_render_markdown_table(table_buffer))
-                table_buffer = []
-                in_table = False
-            result_lines.append(line)
-
-    # Handle table at end of text
-    if table_buffer:
-        result_lines.extend(_render_markdown_table(table_buffer))
-
-    text = '\n'.join(result_lines)
 
     # Clean up excessive newlines (more than 3)
     text = re.sub(r'\n{4,}', '\n\n\n', text)
