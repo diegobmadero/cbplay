@@ -29,6 +29,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 import json
 import argparse
+from cbplay_ui_ansi import AnsiTheme, UiLayout, AnsiKaraokeRenderer, build_highlight_spans
 
 DEBUG = os.getenv('DEBUG') == '1'
 DEBUG_FILE = None
@@ -451,6 +452,8 @@ def play_audio_files_with_status(
     playhead_lag=None,
     esc_timeout=None,
     ui_debug=False,
+    ui_mode="ansi",
+    all_text_chunks=None,
 ):
     # Check if we're in a TTY or if NOTTY is set
     if not sys.stdin.isatty() or os.getenv('NOTTY') == '1':
@@ -486,6 +489,20 @@ def play_audio_files_with_status(
             time.sleep(0.1)
         return
     
+    if ui_mode == "curses":
+        return play_audio_files_with_status_curses(
+            audio_queue,
+            status_queue,
+            tts,
+            highlight=highlight,
+            highlight_model=highlight_model,
+            highlight_window=highlight_window,
+            resume_rewind=resume_rewind,
+            playhead_lag=playhead_lag,
+            ui_debug=ui_debug,
+            all_text_chunks=all_text_chunks,
+        )
+
     old_settings = termios.tcgetattr(sys.stdin)
     try:
         tty.setcbreak(sys.stdin.fileno())
@@ -635,104 +652,31 @@ def play_audio_files_with_status(
             return cache_path
 
         import re
-        ansi_escape_re = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
         token_re = re.compile(r"[A-Za-z0-9]+(?:[''][A-Za-z0-9]+)*")
 
-        # Box-drawing characters and UI helpers
+        # Box-drawing characters and UI renderer
         BOX_TL, BOX_TR, BOX_BL, BOX_BR = '╭', '╮', '╰', '╯'
         BOX_H, BOX_V = '─', '│'
-
-        def visible_len(s: str) -> int:
-            """Return visible length of string (excluding ANSI codes)."""
-            return len(ansi_escape_re.sub('', s))
-
-        def draw_box_top(title: str, width: int, color: str = '') -> str:
-            """Draw top of a box with optional title."""
-            reset = reset_color if color else ''
-            title_part = f" {title} " if title else BOX_H
-            remaining = width - 2 - visible_len(title_part)
-            left_pad = 1
-            right_pad = remaining - left_pad
-            return f"{color}{BOX_TL}{BOX_H * left_pad}{title_part}{BOX_H * max(0, right_pad)}{BOX_TR}{reset}"
-
-        def draw_box_bottom(width: int, color: str = '') -> str:
-            """Draw bottom of a box."""
-            reset = reset_color if color else ''
-            return f"{color}{BOX_BL}{BOX_H * (width - 2)}{BOX_BR}{reset}"
-
-        def draw_box_line(content: str, width: int, color: str = '', content_color: str = '') -> str:
-            """Draw a line inside a box, padding to width."""
-            reset = reset_color if color else ''
-            content_reset = reset_color if content_color else ''
-            inner_width = width - 4  # Account for "│ " and " │"
-            vis_len = visible_len(content)
-            padding = max(0, inner_width - vis_len)
-            return f"{color}{BOX_V}{reset} {content_color}{content}{content_reset}{' ' * padding} {color}{BOX_V}{reset}"
-
-        def wrap_text_for_box(text: str, inner_width: int) -> list:
-            """Wrap text to fit inside a box, preserving ANSI codes."""
-            lines = []
-            for line in text.split('\n'):
-                if not line:
-                    lines.append('')
-                    continue
-                # Simple word wrap
-                words = line.split(' ')
-                current_line = ''
-                for word in words:
-                    test_line = f"{current_line} {word}".strip() if current_line else word
-                    if visible_len(test_line) <= inner_width:
-                        current_line = test_line
-                    else:
-                        if current_line:
-                            lines.append(current_line)
-                        current_line = word
-                        # Handle words longer than inner_width
-                        while visible_len(current_line) > inner_width:
-                            lines.append(current_line[:inner_width])
-                            current_line = current_line[inner_width:]
-                if current_line:
-                    lines.append(current_line)
-            return lines if lines else ['']
-
-        def render_progress_bar(current: float, total: float, width: int = 20) -> str:
-            """Render a compact progress bar."""
-            if total <= 0:
-                return '░' * width
-            ratio = min(1.0, max(0.0, current / total))
-            filled = int(width * ratio)
-            return '█' * filled + '░' * (width - filled)
-
-        def hard_wrap_ansi(text: str, width: int):
-            if width <= 0:
-                return [text]
-            lines = []
-            buf = []
-            visible = 0
-            i = 0
-            while i < len(text):
-                ch = text[i]
-                if ch == "\n":
-                    lines.append("".join(buf))
-                    buf = []
-                    visible = 0
-                    i += 1
-                    continue
-                if ch == "\x1b":
-                    m = ansi_escape_re.match(text, i)
-                    if m:
-                        buf.append(m.group(0))
-                        i = m.end()
-                        continue
-                buf.append(ch)
-                visible += 1
-                i += 1
-                if visible >= width:
-                    lines.append("".join(buf))
-                    buf = []
-                    visible = 0
-            lines.append("".join(buf))
-            return lines
+        progress_full = "█"
+        progress_empty = "░"
+        status_icon_play = "▶"
+        status_icon_pause = "⏸"
+        theme = AnsiTheme(
+            active_color=active_color,
+            prev_color=prev_color,
+            info_color=info_color,
+            reset_color=reset_color,
+            box_tl=BOX_TL,
+            box_tr=BOX_TR,
+            box_bl=BOX_BL,
+            box_br=BOX_BR,
+            box_h=BOX_H,
+            box_v=BOX_V,
+            progress_full=progress_full,
+            progress_empty=progress_empty,
+        )
+        layout = UiLayout(term_width=term_width, display_width=display_width)
+        renderer = AnsiKaraokeRenderer(theme, layout)
 
         _number_norm_map = {
             "zero": "0",
@@ -869,127 +813,6 @@ def play_audio_files_with_status(
 
             return mapping
 
-        def render_current_region(text: str, highlight_spans=None, paused=False, debug_line=None,
-                                   chunk_index=0, total_chunks=0, playhead=0.0, duration=0.0):
-            """Render the current text section in a nice box with karaoke highlighting."""
-            # Build title with chunk info and status
-            status_icon = "⏸" if paused else "▶"
-            if total_chunks > 0:
-                title = f"{status_icon} Now Playing [{chunk_index + 1}/{total_chunks}]"
-            else:
-                title = f"{status_icon} Now Playing"
-            if paused:
-                title += " PAUSED"
-
-            box_width = min(display_width, term_width - 2)
-            inner_width = box_width - 4  # Account for box borders and padding
-
-            rendered_text = text or ""
-            if highlight_spans:
-                events = {}
-                for span in highlight_spans:
-                    if not span or len(span) != 4:
-                        continue
-                    try:
-                        start, end, start_code, end_code = span
-                        start = int(start)
-                        end = int(end)
-                        start_code = str(start_code)
-                        end_code = str(end_code)
-                    except Exception:
-                        continue
-                    if start_code:
-                        events.setdefault(start, []).append(start_code)
-                    if end_code:
-                        events.setdefault(end, []).append(end_code)
-                for idx in sorted(events.keys(), reverse=True):
-                    if 0 <= idx <= len(rendered_text):
-                        rendered_text = rendered_text[:idx] + "".join(events[idx]) + rendered_text[idx:]
-
-            # Build the box
-            box_color = active_color
-            lines = []
-            lines.append(draw_box_top(title, box_width, box_color))
-
-            # Wrap and add text lines
-            wrapped_lines = wrap_text_for_box(rendered_text, inner_width)
-            for line in wrapped_lines:
-                lines.append(draw_box_line(line, box_width, box_color))
-
-            # Add progress bar if we have duration info
-            if duration > 0:
-                progress = render_progress_bar(playhead, duration, width=min(30, inner_width - 10))
-                time_str = f"{playhead:.1f}s / {duration:.1f}s"
-                progress_line = f"{progress}  {time_str}"
-                lines.append(draw_box_line("", box_width, box_color))  # Empty line
-                lines.append(draw_box_line(progress_line, box_width, box_color, info_color))
-
-            lines.append(draw_box_bottom(box_width, box_color))
-
-            if debug_line:
-                lines.append(f"{info_color}{debug_line}{reset_color}")
-            return lines
-
-        def build_highlight_spans(context_span, current_word_span, dim_span=None):
-            """Build karaoke-style highlighting spans.
-
-            Style:
-            - Already spoken (dim_span): dark grey, clearly "used up"
-            - Context window: subtle underline
-            - Current word: bold + bright cyan background (reverse video)
-            """
-            spans = []
-            # Dim already-spoken text - darker grey (38;5;240 is a dark grey from 256-color palette)
-            if dim_span and isinstance(dim_span, (tuple, list)) and len(dim_span) == 2:
-                try:
-                    start, end = int(dim_span[0]), int(dim_span[1])
-                except Exception:
-                    start, end = None, None
-                if start is not None and end is not None and 0 <= start < end:
-                    # Dark grey from 256-color palette for clearly "spoken" text
-                    spans.append((start, end, "\033[38;5;242m", "\033[39m"))
-
-            # Context window - subtle underline
-            if context_span and isinstance(context_span, (tuple, list)) and len(context_span) == 2:
-                try:
-                    start, end = int(context_span[0]), int(context_span[1])
-                except Exception:
-                    start, end = None, None
-                if start is not None and end is not None and 0 <= start < end:
-                    spans.append((start, end, "\033[4m", "\033[24m"))  # underline
-
-            # Current word - bold + reverse video with cyan
-            if current_word_span and isinstance(current_word_span, (tuple, list)) and len(current_word_span) == 2:
-                try:
-                    start, end = int(current_word_span[0]), int(current_word_span[1])
-                except Exception:
-                    start, end = None, None
-                if start is not None and end is not None and 0 <= start < end:
-                    # Bold + cyan background (reverse) + white text
-                    spans.append((start, end, "\033[1;7;96m", "\033[22;27;39m"))
-            return spans if spans else None
-
-        def render_previous_section(text: str, max_lines: int = 4) -> list:
-            """Render the previous chunk in a compact dimmed box."""
-            if not text:
-                return []
-
-            box_width = min(display_width, term_width - 2)
-            inner_width = box_width - 4
-
-            lines = []
-            lines.append(draw_box_top("Previous", box_width, prev_color))
-
-            wrapped = wrap_text_for_box(text, inner_width)
-            # Limit to max_lines, show truncation indicator if needed
-            if len(wrapped) > max_lines:
-                wrapped = wrapped[:max_lines - 1] + [f"... ({len(wrapped) - max_lines + 1} more lines)"]
-
-            for line in wrapped:
-                lines.append(draw_box_line(line, box_width, prev_color, prev_color))
-
-            lines.append(draw_box_bottom(box_width, prev_color))
-            return lines
 
         def render_minimap(current_idx: int, total: int, max_dots: int = 20) -> str:
             """Render a mini-map showing position in chunks: ○○●○○"""
@@ -1233,7 +1056,7 @@ def play_audio_files_with_status(
             # Show history context (Previous section in a compact box)
             if current_index > 0:
                 prev_file, prev_text = history[current_index - 1]
-                prev_lines = render_previous_section(prev_text, max_lines=4)
+                prev_lines = renderer.render_previous_section(prev_text, max_lines=4)
                 for line in prev_lines:
                     print(line)
                 print()  # Spacing between Previous and Current
@@ -1246,12 +1069,13 @@ def play_audio_files_with_status(
 
                 if not highlight_enabled:
                     # Non-highlight mode: simple box display
-                    simple_lines = render_current_region(
+                    simple_lines = renderer.render_current_region(
                         cleaned_text,
                         chunk_index=current_index,
                         total_chunks=effective_total,
                         playhead=0.0,
                         duration=audio_duration,
+                        status_icon=status_icon_play,
                     )
                     for line in simple_lines:
                         print(line)
@@ -1347,7 +1171,7 @@ def play_audio_files_with_status(
                             last_debug_line = (last_debug_line or "") + f" map={mapping_mapped}/{mapping_total}({cov:.0%})"
                     except Exception:
                         pass
-                region_lines = render_current_region(
+                region_lines = renderer.render_current_region(
                     cleaned_text,
                     highlight_spans=build_highlight_spans(current_highlight_span, current_highlight_word_span, current_dim_span),
                     paused=False,
@@ -1356,6 +1180,7 @@ def play_audio_files_with_status(
                     total_chunks=effective_total,
                     playhead=0.0,
                     duration=audio_duration,
+                    status_icon=status_icon_play,
                 )
                 region_line_count = len(region_lines)
                 for i, ln in enumerate(region_lines):
@@ -1411,7 +1236,7 @@ def play_audio_files_with_status(
                             debug_log_file(f"resumed playback_offset={playback_offset}")
                             if highlight_enabled and region_lines is not None:
                                 debug_line = highlight_debug_info(audio_file, words_cache_path, words_status, words_error)
-                                region_lines = render_current_region(
+                                region_lines = renderer.render_current_region(
                                     cleaned_text,
                                     highlight_spans=build_highlight_spans(current_highlight_span, current_highlight_word_span),
                                     paused=False,
@@ -1420,6 +1245,7 @@ def play_audio_files_with_status(
                                     total_chunks=effective_total,
                                     playhead=playback_offset,
                                     duration=audio_duration,
+                                    status_icon=status_icon_play,
                                 )
                                 redraw_region(region_lines, region_line_count)
                                 last_paused_state = False
@@ -1432,7 +1258,7 @@ def play_audio_files_with_status(
                             debug_log_file(f"paused at playhead={paused_at}")
                             if highlight_enabled and region_lines is not None:
                                 debug_line = highlight_debug_info(audio_file, words_cache_path, words_status, words_error)
-                                region_lines = render_current_region(
+                                region_lines = renderer.render_current_region(
                                     cleaned_text,
                                     highlight_spans=build_highlight_spans(current_highlight_span, current_highlight_word_span),
                                     paused=True,
@@ -1441,6 +1267,7 @@ def play_audio_files_with_status(
                                     total_chunks=effective_total,
                                     playhead=current_playhead,
                                     duration=audio_duration,
+                                    status_icon=status_icon_pause,
                                 )
                                 redraw_region(region_lines, region_line_count)
                                 last_paused_state = True
@@ -1548,6 +1375,13 @@ def play_audio_files_with_status(
                         new_word_span = (t["start"], t["end"])
                         if t["start"] > 0:
                             new_dim_span = (0, t["start"])
+                if current_word_index >= 0:
+                    if new_context_span is None and current_highlight_span is not None:
+                        new_context_span = current_highlight_span
+                    if new_word_span is None and current_highlight_word_span is not None:
+                        new_word_span = current_highlight_word_span
+                    if new_dim_span is None and current_dim_span is not None:
+                        new_dim_span = current_dim_span
                 debug_line = highlight_debug_info(audio_file, words_cache_path, words_status, words_error)
                 if ui_debug and words and current_word_index >= 0:
                     try:
@@ -1603,7 +1437,7 @@ def play_audio_files_with_status(
                     last_debug_line = debug_line
                     last_paused_state = paused
                     if region_lines is not None:
-                        region_lines = render_current_region(
+                        region_lines = renderer.render_current_region(
                             cleaned_text,
                             highlight_spans=build_highlight_spans(current_highlight_span, current_highlight_word_span, current_dim_span),
                             paused=paused,
@@ -1612,6 +1446,7 @@ def play_audio_files_with_status(
                             total_chunks=effective_total,
                             playhead=playhead,
                             duration=audio_duration,
+                            status_icon=status_icon_pause if paused else status_icon_play,
                         )
                     redraw_region(region_lines, region_line_count)
                     debug_log_file(f"highlight update word_idx={current_word_index} span={current_highlight_span} status={words_status}")
@@ -1693,6 +1528,855 @@ def play_audio_files_with_status(
                 debug_print(f"User navigated to chunk {current_index + 1}")
     finally:
         termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+
+def play_audio_files_with_status_curses(
+    audio_queue,
+    status_queue,
+    tts,
+    highlight=False,
+    highlight_model="gpt-4o-transcribe",
+    highlight_window=8,
+    resume_rewind=2.0,
+    playhead_lag=None,
+    ui_debug=False,
+    all_text_chunks=None,
+):
+    import curses
+    from cbplay_ui_curses import CursesKaraokeScreen
+
+    ffplay_available = shutil.which("ffplay") is not None
+    rewind_padding = max(0.0, float(resume_rewind or 0.0))
+    highlight_enabled = bool(highlight)
+    ui_debug = bool(ui_debug)
+    try:
+        highlight_context_words = max(0, int(highlight_window or 0))
+    except Exception:
+        highlight_context_words = 1
+
+    if playhead_lag is None:
+        playhead_lag_seconds = 0.0 if ffplay_available else 0.05
+    else:
+        try:
+            playhead_lag_seconds = max(0.0, float(playhead_lag))
+        except Exception:
+            playhead_lag_seconds = 0.0 if ffplay_available else 0.05
+
+    highlight_inflight = set()
+    highlight_lock = threading.Lock()
+    highlight_task_queue = queue.Queue() if highlight_enabled else None
+
+    def word_cache_path_for_text(text):
+        return tts.cache_dir / f"{tts._hash_text(text)}.words.json"
+
+    def highlight_worker():
+        while True:
+            audio_path, cache_path, key = highlight_task_queue.get()
+            try:
+                existing = load_word_timestamps(cache_path, expected_model=highlight_model)
+                if existing and existing.get("status") == "ok":
+                    continue
+                words = transcribe_audio_words(Path(audio_path), model=highlight_model)
+                if words:
+                    save_word_timestamps(cache_path, highlight_model, words, status="ok", error=None)
+                else:
+                    save_word_timestamps(
+                        cache_path,
+                        highlight_model,
+                        [],
+                        status="error",
+                        error="No word timestamps returned",
+                    )
+            except Exception as e:
+                debug_print(f"Highlight transcription worker failed: {e}")
+                try:
+                    save_word_timestamps(cache_path, highlight_model, [], status="error", error=str(e))
+                except Exception:
+                    pass
+            finally:
+                with highlight_lock:
+                    highlight_inflight.discard(key)
+                highlight_task_queue.task_done()
+
+    if highlight_enabled:
+        for _ in range(2):
+            threading.Thread(target=highlight_worker, daemon=True).start()
+
+    def schedule_word_timestamps(audio_path, text):
+        cache_path = word_cache_path_for_text(text)
+        if cache_path.exists():
+            existing = load_word_timestamps(cache_path, expected_model=highlight_model)
+            if existing and existing.get("status") == "ok":
+                return cache_path
+            if existing and existing.get("status") == "error":
+                try:
+                    created_at = float(existing.get("created_at") or 0.0)
+                except Exception:
+                    created_at = 0.0
+                if created_at > 0 and (time.time() - created_at) < 60:
+                    return cache_path
+        key = str(cache_path)
+        with highlight_lock:
+            if key in highlight_inflight:
+                return cache_path
+            highlight_inflight.add(key)
+        highlight_task_queue.put((audio_path, cache_path, key))
+        return cache_path
+
+    import re
+    token_re = re.compile(r"[A-Za-z0-9]+(?:[''][A-Za-z0-9]+)*")
+    _number_norm_map = {
+        "zero": "0",
+        "one": "1",
+        "two": "2",
+        "three": "3",
+        "four": "4",
+        "five": "5",
+        "six": "6",
+        "seven": "7",
+        "eight": "8",
+        "nine": "9",
+        "ten": "10",
+        "eleven": "11",
+        "twelve": "12",
+        "thirteen": "13",
+        "fourteen": "14",
+        "fifteen": "15",
+        "sixteen": "16",
+        "seventeen": "17",
+        "eighteen": "18",
+        "nineteen": "19",
+        "twenty": "20",
+        "thirty": "30",
+        "forty": "40",
+        "fifty": "50",
+        "sixty": "60",
+        "seventy": "70",
+        "eighty": "80",
+        "ninety": "90",
+    }
+
+    def normalize_for_match(word: str):
+        cleaned = re.sub(r"[^a-z0-9]+", "", (word or "").lower())
+        return _number_norm_map.get(cleaned, cleaned)
+
+    def extract_text_tokens(text: str):
+        tokens = []
+        for match in token_re.finditer(text or ""):
+            raw = match.group(0)
+            norm = normalize_for_match(raw)
+            if not norm:
+                continue
+            tokens.append({"norm": norm, "start": match.start(), "end": match.end()})
+        return tokens
+
+    def align_words_to_text(words, tokens, lookahead=12):
+        mapping = [None] * (len(words) if isinstance(words, list) else 0)
+        if not words or not tokens:
+            return mapping
+
+        word_norms = []
+        for item in words:
+            if isinstance(item, dict):
+                w = str(item.get("word", "")).strip()
+            else:
+                w = str(item).strip()
+            word_norms.append(normalize_for_match(w))
+        token_norms = [str(t.get("norm") or "") for t in tokens]
+
+        def is_match(a: str, b: str) -> bool:
+            if not a or not b:
+                return False
+            if a == b:
+                return True
+            if len(a) >= 4 and len(b) >= 4:
+                return a.startswith(b) or b.startswith(a)
+            return False
+
+        n = len(word_norms)
+        m = len(token_norms)
+        if n == 0 or m == 0:
+            return mapping
+
+        if n * m > 600_000:
+            token_index = 0
+            for i, w_norm in enumerate(word_norms):
+                if not w_norm:
+                    continue
+                end = min(token_index + int(lookahead or 0), m)
+                found = None
+                for j in range(token_index, end):
+                    if is_match(w_norm, token_norms[j]):
+                        found = j
+                        break
+                if found is not None:
+                    mapping[i] = found
+                    token_index = found + 1
+            return mapping
+
+        gap_penalty = 1
+        match_score = 2
+        neg_inf = -10**9
+
+        dp = [[0] * (m + 1) for _ in range(n + 1)]
+        for i in range(1, n + 1):
+            dp[i][0] = dp[i - 1][0] - gap_penalty
+        for j in range(1, m + 1):
+            dp[0][j] = dp[0][j - 1] - gap_penalty
+
+        for i in range(1, n + 1):
+            a = word_norms[i - 1]
+            row = dp[i]
+            prev_row = dp[i - 1]
+            for j in range(1, m + 1):
+                best = max(prev_row[j] - gap_penalty, row[j - 1] - gap_penalty)
+                b = token_norms[j - 1]
+                if is_match(a, b):
+                    best = max(best, prev_row[j - 1] + match_score)
+                else:
+                    best = max(best, prev_row[j - 1] + neg_inf)
+                row[j] = best
+
+        i = n
+        j = m
+        while i > 0 and j > 0:
+            a = word_norms[i - 1]
+            b = token_norms[j - 1]
+            if is_match(a, b) and dp[i][j] == dp[i - 1][j - 1] + match_score:
+                mapping[i - 1] = j - 1
+                i -= 1
+                j -= 1
+                continue
+            if dp[i][j] == dp[i - 1][j] - gap_penalty:
+                i -= 1
+                continue
+            j -= 1
+
+        return mapping
+
+    def get_audio_duration(audio_path) -> float:
+        try:
+            result = subprocess.run(
+                ['ffprobe', '-v', 'quiet', '-show_entries', 'format=duration',
+                 '-of', 'default=noprint_wrappers=1:nokey=1', str(audio_path)],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return float(result.stdout.strip())
+        except Exception:
+            pass
+        try:
+            size = Path(audio_path).stat().st_size
+            return size / 16000
+        except Exception:
+            return 0.0
+
+    def start_player(audio_path, start_at=0.0):
+        if ffplay_available:
+            cmd = ['ffplay', '-nodisp', '-autoexit']
+            if start_at > 0:
+                cmd.extend(['-ss', f'{start_at}'])
+            cmd.append(str(audio_path))
+            return subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+        return subprocess.Popen(
+            ['afplay', str(audio_path)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+
+    def highlight_debug_info(audio_path, cache_path, status, error):
+        if not ui_debug:
+            return None
+        try:
+            audio_ext = Path(audio_path).suffix.lower() if audio_path else ""
+        except Exception:
+            audio_ext = ""
+        cache_exists = bool(cache_path and Path(cache_path).exists())
+        cache_name = ""
+        try:
+            cache_name = Path(cache_path).name if cache_path else ""
+        except Exception:
+            cache_name = ""
+        qsize = 0
+        if highlight_task_queue is not None:
+            try:
+                qsize = int(highlight_task_queue.qsize())
+            except Exception:
+                qsize = 0
+        with highlight_lock:
+            inflight = len(highlight_inflight)
+        err = (error or "").replace("\n", " ").strip()
+        if len(err) > 160:
+            err = err[:157] + "..."
+        parts = [
+            f"dbg st={status}",
+            f"m={highlight_model}",
+            f"audio={audio_ext or '?'}",
+            f"cache={'y' if cache_exists else 'n'}",
+            f"q={qsize}",
+            f"in={inflight}",
+        ]
+        if cache_name:
+            parts.append(f"file={cache_name}")
+        if err:
+            parts.append(f"err={err}")
+        return " ".join(parts)
+
+    def curses_main(stdscr):
+        screen = CursesKaraokeScreen(stdscr, debug=ui_debug)
+        stdscr.nodelay(True)
+        stdscr.timeout(0)
+
+        def render_minimap(current_idx: int, total: int, max_dots: int = 20) -> str:
+            if total <= 0:
+                return ""
+            if total <= max_dots:
+                dots = []
+                for i in range(total):
+                    dots.append("●" if i == current_idx else "○")
+                return "".join(dots)
+            result = []
+            for i in range(min(3, total)):
+                result.append("●" if i == current_idx else "○")
+            if current_idx > 4:
+                result.append("…")
+            if 3 <= current_idx < total - 3:
+                for i in range(max(3, current_idx - 1), min(total - 3, current_idx + 2)):
+                    result.append("●" if i == current_idx else "○")
+            if current_idx < total - 5:
+                result.append("…")
+            for i in range(max(total - 3, 0), total):
+                if i > current_idx + 1 or i < 3:
+                    continue
+                result.append("●" if i == current_idx else "○")
+            for i in range(max(total - 3, current_idx + 2), total):
+                result.append("●" if i == current_idx else "○")
+            return "".join(result)
+
+        def render_controls_bar(paused: bool, chunk_idx: int, total_chunks: int) -> str:
+            controls = "Space Pause  |  ↑↓ Navigate  |  Q/Esc Exit"
+            if paused:
+                controls = "Space Resume |  ↑↓ Navigate  |  Q/Esc Exit"
+            if total_chunks > 1:
+                minimap = render_minimap(chunk_idx, total_chunks)
+                return f"{minimap}  {controls}" if minimap else controls
+            return controls
+
+        history = []
+        current_index = -1
+        generation_done = False
+        total_chunks = 0
+        generated_chunks = 0
+        expected_total = 0
+        start_time = time.time()
+
+        full_lines = []
+        chunk_line_ranges = []
+        line_ranges_by_chunk = []
+        pad_top = 0
+        last_history_len = 0
+        last_current_index = None
+        needs_full_render = True
+
+        def get_display_chunks():
+            if all_text_chunks:
+                return list(all_text_chunks)
+            return [item[1] for item in history]
+
+        def effective_total_count():
+            if total_chunks > 0:
+                return total_chunks
+            if all_text_chunks:
+                return len(all_text_chunks)
+            return len(history)
+
+        def compute_pad_top():
+            nonlocal pad_top
+            if current_index < 0 or current_index >= len(chunk_line_ranges):
+                pad_top = 0
+                return
+            start, end = chunk_line_ranges[current_index]
+            if end - start >= screen.body_height:
+                pad_top = max(0, start)
+                return
+            target = max(0, start - max(1, int(screen.body_height * 0.2)))
+            max_top = max(0, screen.pad_height - screen.body_height)
+            pad_top = min(target, max_top)
+
+        def rebuild_fullpage():
+            nonlocal full_lines, chunk_line_ranges, line_ranges_by_chunk, needs_full_render
+            display_chunks = get_display_chunks()
+            full_lines, chunk_line_ranges, line_ranges_by_chunk = screen.build_fullpage_lines_with_ranges(
+                display_chunks, current_index
+            )
+            screen.draw_pad_lines(full_lines)
+            compute_pad_top()
+            needs_full_render = False
+
+        def redraw_current_chunk_base():
+            if current_index < 0 or current_index >= len(chunk_line_ranges):
+                return
+            start, end = chunk_line_ranges[current_index]
+            for pad_line in range(start, end):
+                if 0 <= pad_line < len(full_lines):
+                    text, attr = full_lines[pad_line]
+                    screen._safe_addnstr(screen.body_pad, pad_line, 0, text, attr)
+
+        def apply_highlights(current_dim_span, current_highlight_span, current_word_span):
+            if not highlight_enabled:
+                return
+            if current_index < 0 or current_index >= len(chunk_line_ranges):
+                return
+            if current_index >= len(line_ranges_by_chunk):
+                return
+            redraw_current_chunk_base()
+            line_ranges = line_ranges_by_chunk[current_index]
+            chunk_start_line = chunk_line_ranges[current_index][0]
+            if current_dim_span:
+                screen.apply_span(
+                    chunk_start_line,
+                    line_ranges,
+                    current_dim_span[0],
+                    current_dim_span[1],
+                    full_lines,
+                    screen.colors.get("spoken", 0),
+                )
+            if current_highlight_span:
+                screen.apply_span(
+                    chunk_start_line,
+                    line_ranges,
+                    current_highlight_span[0],
+                    current_highlight_span[1],
+                    full_lines,
+                    screen.colors.get("current", 0) | curses.A_UNDERLINE,
+                )
+            if current_word_span:
+                screen.apply_span(
+                    chunk_start_line,
+                    line_ranges,
+                    current_word_span[0],
+                    current_word_span[1],
+                    full_lines,
+                    screen.colors.get("current_word", 0),
+                )
+
+        def build_status_line(paused: bool, playhead: float, duration: float):
+            if not generation_done and total_chunks > 0:
+                percent = (generated_chunks / total_chunks) * 100
+                bar_length = 20
+                filled = int(bar_length * generated_chunks / total_chunks)
+                bar = "#" * filled + "-" * (bar_length - filled)
+                return f"Generating: [{bar}] {percent:.0f}% ({generated_chunks}/{total_chunks})"
+            total = effective_total_count()
+            if current_index >= 0 and total > 0:
+                icon = "⏸" if paused else "▶"
+                line = f"{icon} Now Playing [{current_index + 1}/{total}]"
+                if duration > 0:
+                    line += f"  {playhead:.1f}s/{duration:.1f}s"
+                return line
+            return "Waiting for audio..."
+
+        def refresh_ui(paused: bool, playhead: float, duration: float, debug_line: str):
+            status_line = build_status_line(paused, playhead, duration)
+            controls_line = render_controls_bar(paused, max(0, current_index), effective_total_count())
+            screen.draw_header([status_line, controls_line])
+            screen.draw_footer(debug_line or "")
+            screen.refresh(pad_top)
+
+        while True:
+            if screen.handle_resize():
+                needs_full_render = True
+
+            while not status_queue.empty():
+                try:
+                    status = status_queue.get_nowait()
+                    if status[0] == "cached":
+                        generated_chunks = status[1]
+                        total_chunks = status[2]
+                    elif status[0] == "progress":
+                        generated_chunks = status[1]
+                        total_chunks = status[2]
+                    elif status[0] == "done":
+                        generation_done = True
+                        total_chunks = status[2]
+                        elapsed = time.time() - start_time
+                        debug_print(f"Generation done in {elapsed:.1f}s (chunks={status[1]}/{total_chunks})")
+                except queue.Empty:
+                    break
+
+            if current_index > 0 and current_index >= len(history):
+                current_index = len(history) - 1
+
+            if 0 <= current_index < len(history):
+                current_text_chunk = history[current_index]
+            elif not audio_queue.empty():
+                try:
+                    current_text_chunk = audio_queue.get_nowait()
+                    history.append(current_text_chunk)
+                    if highlight_enabled:
+                        try:
+                            schedule_word_timestamps(current_text_chunk[0], current_text_chunk[1])
+                        except Exception:
+                            pass
+                    if current_index == -1:
+                        current_index = 0
+                    else:
+                        current_index = len(history) - 1
+                except queue.Empty:
+                    current_text_chunk = None
+            else:
+                current_text_chunk = None
+
+            history_len = len(history)
+            if history_len != last_history_len:
+                last_history_len = history_len
+                needs_full_render = True
+            if current_index != last_current_index:
+                last_current_index = current_index
+                needs_full_render = True
+
+            if needs_full_render:
+                rebuild_fullpage()
+
+            if current_text_chunk is None:
+                refresh_ui(False, 0.0, 0.0, "")
+                time.sleep(0.1)
+                if generation_done and len(history) == 0:
+                    break
+                continue
+
+            audio_file, original_text_chunk = current_text_chunk
+            cleaned_text = original_text_chunk
+            audio_duration = get_audio_duration(audio_file)
+            effective_total = effective_total_count()
+
+            words_cache_path = None
+            words = None
+            words_error = None
+            words_status = "preparing"
+            current_word_index = -1
+            tokens = None
+            word_to_token = None
+            mapping_total = 0
+            mapping_mapped = 0
+            text_debug_hash = None
+            if ui_debug:
+                try:
+                    text_debug_hash = hashlib.sha256(cleaned_text.encode("utf-8")).hexdigest()[:10]
+                except Exception:
+                    text_debug_hash = None
+
+            current_highlight_span = None
+            current_highlight_word_span = None
+            current_dim_span = None
+            last_debug_line = None
+            last_words_status = words_status
+            last_paused_state = False
+
+            if highlight_enabled:
+                try:
+                    words_cache_path = schedule_word_timestamps(audio_file, original_text_chunk)
+                    payload = load_word_timestamps(words_cache_path, expected_model=highlight_model)
+                    if payload is None:
+                        words_status = "preparing"
+                    elif payload.get("status") == "ok":
+                        words_status = "ok"
+                        words = payload.get("words") or None
+                    else:
+                        words_status = "error"
+                        words_error = payload.get("error")
+                except Exception:
+                    words_cache_path = None
+                    words = None
+                    words_error = None
+                    words_status = "preparing"
+
+            if words and words_status == "ok":
+                try:
+                    if float(words[0].get("start", 0.0)) <= 0.05:
+                        current_word_index = 0
+                except Exception:
+                    pass
+                tokens = extract_text_tokens(cleaned_text)
+                word_to_token = align_words_to_text(words, tokens)
+                if word_to_token:
+                    mapping_total = len(word_to_token)
+                    mapping_mapped = sum(1 for idx in word_to_token if idx is not None)
+                if current_word_index >= 0 and word_to_token and tokens:
+                    spans = []
+                    for wi in range(
+                        current_word_index - highlight_context_words,
+                        current_word_index + highlight_context_words + 1,
+                    ):
+                        if 0 <= wi < len(word_to_token):
+                            token_idx = word_to_token[wi]
+                            if token_idx is not None and 0 <= token_idx < len(tokens):
+                                t = tokens[token_idx]
+                                spans.append((t["start"], t["end"]))
+                    if spans:
+                        current_highlight_span = (min(s for s, _ in spans), max(e for _, e in spans))
+                    token_idx = word_to_token[current_word_index]
+                    if token_idx is not None and 0 <= token_idx < len(tokens):
+                        t = tokens[token_idx]
+                        current_highlight_word_span = (t["start"], t["end"])
+                        if t["start"] > 0:
+                            current_dim_span = (0, t["start"])
+
+            debug_line = highlight_debug_info(audio_file, words_cache_path, words_status, words_error)
+            if ui_debug:
+                try:
+                    if text_debug_hash:
+                        debug_line = (debug_line or "") + f" txt={text_debug_hash}"
+                    if mapping_total:
+                        cov = mapping_mapped / mapping_total if mapping_total else 0.0
+                        debug_line = (debug_line or "") + f" map={mapping_mapped}/{mapping_total}({cov:.0%})"
+                except Exception:
+                    pass
+
+            apply_highlights(current_dim_span, current_highlight_span, current_highlight_word_span)
+            refresh_ui(False, 0.0, audio_duration, debug_line)
+
+            playback_offset = 0.0
+            process = start_player(audio_file, start_at=playback_offset)
+            playback_started_at = time.monotonic()
+            playback_lag = playhead_lag_seconds
+            playhead = 0.0
+            paused_at = None
+            user_interrupted = False
+            paused = False
+
+            while process.poll() is None:
+                if screen.handle_resize():
+                    needs_full_render = True
+                    rebuild_fullpage()
+                    apply_highlights(current_dim_span, current_highlight_span, current_highlight_word_span)
+                    refresh_ui(paused, playhead, audio_duration, debug_line)
+
+                ch = stdscr.getch()
+                if ch != -1:
+                    if ch == ord(' '):
+                        now = time.monotonic()
+                        current_playhead = max(0.0, playback_offset + (now - playback_started_at) - playback_lag)
+                        if paused:
+                            resume_from = paused_at if paused_at is not None else current_playhead
+                            target_offset = max(resume_from - rewind_padding, 0.0)
+                            if ffplay_available:
+                                if process.poll() is None:
+                                    try:
+                                        process.send_signal(signal.SIGCONT)
+                                        process.terminate()
+                                        process.wait(timeout=0.3)
+                                    except Exception:
+                                        try:
+                                            process.kill()
+                                        except Exception:
+                                            pass
+                                process = start_player(audio_file, start_at=target_offset)
+                                playback_offset = target_offset
+                                playback_lag = playhead_lag_seconds
+                            else:
+                                process.send_signal(signal.SIGCONT)
+                                playback_offset = resume_from
+                                playback_lag = 0.0
+                            playback_started_at = time.monotonic()
+                            paused = False
+                            paused_at = None
+                            refresh_ui(False, playback_offset, audio_duration, debug_line)
+                        else:
+                            process.send_signal(signal.SIGSTOP)
+                            paused_at = current_playhead
+                            paused = True
+                            refresh_ui(True, current_playhead, audio_duration, debug_line)
+                        continue
+                    if ch in (27, ord('q'), ord('Q')):
+                        if paused:
+                            process.send_signal(signal.SIGCONT)
+                        process.terminate()
+                        return
+                    if ch == curses.KEY_UP:
+                        if current_index > 0:
+                            current_index -= 1
+                            user_interrupted = True
+                            if paused:
+                                process.send_signal(signal.SIGCONT)
+                            process.terminate()
+                            break
+                    if ch == curses.KEY_DOWN:
+                        if current_index < len(history) - 1:
+                            current_index += 1
+                            user_interrupted = True
+                            if paused:
+                                process.send_signal(signal.SIGCONT)
+                            process.terminate()
+                            break
+
+                if paused:
+                    time.sleep(0.05)
+                    continue
+
+                if highlight_enabled:
+                    if words_cache_path is not None and words_status != "ok":
+                        payload = load_word_timestamps(words_cache_path, expected_model=highlight_model)
+                        if payload is None:
+                            words_status = "preparing"
+                        elif payload.get("status") == "ok":
+                            words_status = "ok"
+                            words_error = None
+                            words = payload.get("words") or None
+                            current_word_index = -1
+                            tokens = extract_text_tokens(cleaned_text)
+                            word_to_token = align_words_to_text(words, tokens)
+                            if word_to_token:
+                                mapping_total = len(word_to_token)
+                                mapping_mapped = sum(1 for idx in word_to_token if idx is not None)
+                        else:
+                            words_status = "error"
+                            words_error = payload.get("error")
+                            words = None
+                            tokens = None
+                            word_to_token = None
+                            mapping_total = 0
+                            mapping_mapped = 0
+                    playhead = max(0.0, playback_offset + (time.monotonic() - playback_started_at) - playback_lag)
+
+                if words:
+                    while (current_word_index + 1) < len(words) and playhead >= words[current_word_index + 1].get("start", 0.0):
+                        current_word_index += 1
+                    while current_word_index >= 0 and playhead < words[current_word_index].get("start", 0.0):
+                        current_word_index -= 1
+
+                new_context_span = None
+                new_word_span = None
+                new_dim_span = None
+                if words and word_to_token and tokens and current_word_index >= 0:
+                    spans = []
+                    for wi in range(
+                        current_word_index - highlight_context_words,
+                        current_word_index + highlight_context_words + 1,
+                    ):
+                        if 0 <= wi < len(word_to_token):
+                            token_idx = word_to_token[wi]
+                            if token_idx is not None and 0 <= token_idx < len(tokens):
+                                t = tokens[token_idx]
+                                spans.append((t["start"], t["end"]))
+                    if spans:
+                        new_context_span = (min(s for s, _ in spans), max(e for _, e in spans))
+                    token_idx = word_to_token[current_word_index]
+                    if token_idx is not None and 0 <= token_idx < len(tokens):
+                        t = tokens[token_idx]
+                        new_word_span = (t["start"], t["end"])
+                        if t["start"] > 0:
+                            new_dim_span = (0, t["start"])
+
+                debug_line = highlight_debug_info(audio_file, words_cache_path, words_status, words_error)
+                if ui_debug and words and current_word_index >= 0:
+                    try:
+                        w = str(words[current_word_index].get("word", "")).strip()
+                        ws = float(words[current_word_index].get("start", 0.0))
+                        we = float(words[current_word_index].get("end", 0.0))
+                    except Exception:
+                        w = ""
+                        ws = None
+                        we = None
+                    extra = f" ph={playhead:.2f} lag={playback_lag:.2f} idx={current_word_index}/{len(words)}"
+                    if w:
+                        extra += f" w={w!r}"
+                    if ws is not None and we is not None:
+                        extra += f" ws={ws:.2f} we={we:.2f}"
+                    extra += f" ctx={highlight_context_words}"
+                    if text_debug_hash:
+                        extra += f" txt={text_debug_hash}"
+                    if mapping_total:
+                        try:
+                            cov = mapping_mapped / mapping_total if mapping_total else 0.0
+                        except Exception:
+                            cov = 0.0
+                        extra += f" map={mapping_mapped}/{mapping_total}({cov:.0%})"
+                    tok_text = None
+                    if word_to_token and tokens and 0 <= current_word_index < len(word_to_token):
+                        tok_idx = word_to_token[current_word_index]
+                        if tok_idx is not None and 0 <= tok_idx < len(tokens):
+                            t = tokens[tok_idx]
+                            try:
+                                tok_text = cleaned_text[t["start"]:t["end"]]
+                            except Exception:
+                                tok_text = None
+                    if tok_text:
+                        tok_text = tok_text.replace("\n", " ")
+                        if len(tok_text) > 24:
+                            tok_text = tok_text[:21] + "..."
+                        extra += f" tok={tok_text!r}"
+                    debug_line = (debug_line or "") + extra
+
+                if (
+                    new_context_span != current_highlight_span
+                    or new_word_span != current_highlight_word_span
+                    or new_dim_span != current_dim_span
+                    or words_status != last_words_status
+                    or debug_line != last_debug_line
+                    or paused != last_paused_state
+                ):
+                    current_highlight_span = new_context_span
+                    current_highlight_word_span = new_word_span
+                    current_dim_span = new_dim_span
+                    last_words_status = words_status
+                    last_debug_line = debug_line
+                    last_paused_state = paused
+                    apply_highlights(current_dim_span, current_highlight_span, current_highlight_word_span)
+                    refresh_ui(paused, playhead, audio_duration, debug_line)
+
+                if not audio_queue.empty() and current_index == len(history) - 1:
+                    try:
+                        new_chunk = audio_queue.get_nowait()
+                        history.append(new_chunk)
+                        if highlight_enabled:
+                            try:
+                                schedule_word_timestamps(new_chunk[0], new_chunk[1])
+                            except Exception:
+                                pass
+                        needs_full_render = True
+                    except queue.Empty:
+                        pass
+
+                time.sleep(0.01)
+
+            if not user_interrupted:
+                is_at_last_chunk = (current_index == len(history) - 1 and audio_queue.empty() and generation_done)
+                if is_at_last_chunk:
+                    while True:
+                        refresh_ui(False, playhead, audio_duration, "Reached end. ↑ to replay, Q to exit.")
+                        ch = stdscr.getch()
+                        if ch == curses.KEY_UP:
+                            if current_index > 0:
+                                current_index -= 1
+                                needs_full_render = True
+                                break
+                            continue
+                        if ch in (27, ord('q'), ord('Q')):
+                            return
+                        time.sleep(0.1)
+                elif current_index < len(history) - 1:
+                    current_index += 1
+                elif not audio_queue.empty():
+                    try:
+                        new_chunk = audio_queue.get_nowait()
+                        history.append(new_chunk)
+                        if highlight_enabled:
+                            try:
+                                schedule_word_timestamps(new_chunk[0], new_chunk[1])
+                            except Exception:
+                                pass
+                        current_index += 1
+                        needs_full_render = True
+                    except queue.Empty:
+                        pass
+
+    curses.wrapper(curses_main)
 
 def graceful_exit(signal_received, frame):
     debug_print("Graceful exit initiated.")
@@ -1953,6 +2637,8 @@ def run_interactive_tts_flow(clipboard_content, combined_texts, args, model):
         playhead_lag=args.playhead_lag,
         esc_timeout=args.esc_timeout,
         ui_debug=args.debug,
+        ui_mode=args.ui,
+        all_text_chunks=combined_texts,
     )
 
 def main():
@@ -1988,9 +2674,20 @@ def main():
     parser.add_argument('--stream',
                         action='store_true',
                         help='Use async streaming playback (AsyncOpenAI + LocalAudioPlayer). Disables interactive UI.')
-    parser.add_argument('--highlight',
-                        action='store_true',
-                        help='Highlight the currently spoken word (does an extra transcription call per chunk; cached). Only supported in interactive UI.')
+    parser.add_argument('--ui',
+                        choices=['ansi', 'curses'],
+                        default='curses',
+                        help='Interactive UI mode (default: curses).')
+    highlight_group = parser.add_mutually_exclusive_group()
+    highlight_group.add_argument('--highlight',
+                                 dest='highlight',
+                                 action='store_true',
+                                 help='Highlight the currently spoken word (default: on; cached). Only supported in interactive UI.')
+    highlight_group.add_argument('--no-highlight',
+                                 dest='highlight',
+                                 action='store_false',
+                                 help='Disable word-level highlighting.')
+    parser.set_defaults(highlight=True)
     parser.add_argument('--highlight-model',
                         default='whisper-1',
                         help='Transcription model used for word-level timestamps when --highlight is enabled (word timestamps require whisper-1).')
@@ -2038,8 +2735,11 @@ def main():
     debug_log_file(f"args: {args}")
 
     if args.stream and args.highlight:
-        print("--highlight is only supported in interactive UI. Remove --stream to use highlighting.")
-        return
+        if "--highlight" in sys.argv:
+            print("--highlight is only supported in interactive UI. Remove --stream to use highlighting.")
+            return
+        print("Note: --highlight disabled because --stream uses non-interactive playback.")
+        args.highlight = False
     
     signal.signal(signal.SIGINT, graceful_exit)
 

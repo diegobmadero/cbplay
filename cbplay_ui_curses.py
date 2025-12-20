@@ -1,0 +1,279 @@
+from dataclasses import dataclass
+import curses
+from typing import Dict, List, Optional, Tuple
+
+
+@dataclass(frozen=True)
+class CursesLayout:
+    header_rows: int = 2
+    footer_rows: int = 1
+
+
+@dataclass(frozen=True)
+class WrappedChunk:
+    text: str
+    lines: List[str]
+    line_ranges: List[Tuple[int, int]]
+
+
+class CursesKaraokeScreen:
+    def __init__(self, stdscr, layout: Optional[CursesLayout] = None, debug: bool = False):
+        self.stdscr = stdscr
+        self.layout = layout or CursesLayout()
+        self.debug = bool(debug)
+        self.term_height, self.term_width = self.stdscr.getmaxyx()
+        self.body_height = max(1, self.term_height - self.layout.header_rows - self.layout.footer_rows)
+        self.body_pad = None
+        self.pad_height = 0
+        self.pad_width = 0
+        self.header_win = None
+        self.footer_win = None
+        self.colors: Dict[str, int] = {}
+        self._init_curses()
+        self._init_colors()
+        self._rebuild_windows()
+
+    def _init_curses(self):
+        curses.curs_set(0)
+        curses.noecho()
+        curses.cbreak()
+        self.stdscr.keypad(True)
+
+    def _init_colors(self):
+        if curses.has_colors():
+            curses.start_color()
+            curses.use_default_colors()
+        self.colors = {
+            "current": curses.A_BOLD,
+            "future": curses.A_NORMAL,
+            "past": curses.A_DIM,
+            "current_word": curses.A_BOLD | curses.A_REVERSE,
+            "spoken": curses.A_DIM,
+            "info": curses.A_DIM,
+        }
+
+    def _rebuild_windows(self):
+        self.term_height, self.term_width = self.stdscr.getmaxyx()
+        self.body_height = max(1, self.term_height - self.layout.header_rows - self.layout.footer_rows)
+        self.header_win = self.stdscr.derwin(self.layout.header_rows, self.term_width, 0, 0)
+        self.footer_win = self.stdscr.derwin(
+            self.layout.footer_rows, self.term_width, self.term_height - self.layout.footer_rows, 0
+        )
+        self._ensure_pad(self.body_height)
+
+    def _ensure_pad(self, needed_lines: int):
+        needed = max(needed_lines, self.body_height, 1)
+        if self.body_pad is None or needed > self.pad_height or self.term_width != self.pad_width:
+            self.pad_height = needed
+            self.pad_width = self.term_width
+            self.body_pad = curses.newpad(self.pad_height, self.pad_width)
+
+    def handle_resize(self) -> bool:
+        new_h, new_w = self.stdscr.getmaxyx()
+        if (new_h, new_w) == (self.term_height, self.term_width):
+            return False
+        curses.resizeterm(new_h, new_w)
+        self._rebuild_windows()
+        return True
+
+    def clear(self):
+        self.stdscr.erase()
+        if self.header_win is not None:
+            self.header_win.erase()
+        if self.footer_win is not None:
+            self.footer_win.erase()
+        if self.body_pad is not None:
+            self.body_pad.erase()
+
+    def _safe_addnstr(self, win, y: int, x: int, text: str, attr: int = 0):
+        if win is None:
+            return
+        try:
+            win.addnstr(y, x, text, max(0, self.term_width - x - 1), attr)
+        except curses.error:
+            pass
+
+    def draw_header(self, lines: List[str]):
+        if self.header_win is None:
+            return
+        self.header_win.erase()
+        for idx in range(min(len(lines), self.layout.header_rows)):
+            self._safe_addnstr(self.header_win, idx, 0, lines[idx], self.colors.get("info", 0))
+
+    def draw_footer(self, text: str, attr: int = 0):
+        if self.footer_win is None:
+            return
+        self.footer_win.erase()
+        self._safe_addnstr(self.footer_win, 0, 0, text, attr or self.colors.get("info", 0))
+
+    def draw_pad_lines(self, lines: List[Tuple[str, int]]):
+        self._ensure_pad(len(lines))
+        if self.body_pad is None:
+            return
+        self.body_pad.erase()
+        for y, (text, attr) in enumerate(lines):
+            self._safe_addnstr(self.body_pad, y, 0, text, attr)
+
+    def apply_span(
+        self,
+        chunk_start_line: int,
+        line_ranges: List[Tuple[int, int]],
+        span_start: Optional[int],
+        span_end: Optional[int],
+        lines: List[Tuple[str, int]],
+        attr: int,
+    ):
+        if self.body_pad is None or not lines:
+            return
+        segments = self.span_to_segments(line_ranges, span_start, span_end)
+        if not segments:
+            return
+        for line_no, col_start, col_end in segments:
+            pad_line = chunk_start_line + line_no
+            if pad_line < 0 or pad_line >= len(lines):
+                continue
+            line_text = lines[pad_line][0]
+            if not line_text or col_start >= len(line_text):
+                continue
+            end = min(col_end, len(line_text))
+            if end <= col_start:
+                continue
+            self._safe_addnstr(self.body_pad, pad_line, col_start, line_text[col_start:end], attr)
+
+    def refresh(self, pad_top: int = 0):
+        if self.header_win is not None:
+            self.header_win.noutrefresh()
+        if self.footer_win is not None:
+            self.footer_win.noutrefresh()
+        if self.body_pad is not None:
+            top = max(0, min(pad_top, max(0, self.pad_height - self.body_height)))
+            self.body_pad.noutrefresh(
+                top,
+                0,
+                self.layout.header_rows,
+                0,
+                self.layout.header_rows + self.body_height - 1,
+                self.term_width - 1,
+            )
+        curses.doupdate()
+
+    def wrap_text_basic(self, text: str, width: int) -> List[str]:
+        lines: List[str] = []
+        for raw_line in (text or "").split("\n"):
+            if not raw_line:
+                lines.append("")
+                continue
+            start = 0
+            while start < len(raw_line):
+                lines.append(raw_line[start : start + width])
+                start += width
+        return lines if lines else [""]
+
+    def wrap_text_with_ranges(self, text: str, width: int) -> Tuple[List[str], List[Tuple[int, int]]]:
+        """Wrap text while preserving exact indices, returning line ranges."""
+        if width <= 0:
+            width = 1
+        text = text or ""
+        if not text:
+            return [""], [(0, 0)]
+        lines: List[str] = []
+        ranges: List[Tuple[int, int]] = []
+        i = 0
+        text_len = len(text)
+        while i < text_len:
+            line_start = i
+            line_len = 0
+            last_space_pos = None
+            last_space_idx = None
+            broke_on_newline = False
+            while i < text_len:
+                ch = text[i]
+                if ch == "\n":
+                    broke_on_newline = True
+                    break
+                line_len += 1
+                if ch.isspace():
+                    last_space_pos = line_len - 1
+                    last_space_idx = i
+                i += 1
+                if line_len >= width:
+                    break
+
+            line_end = i
+            if i < text_len and (not broke_on_newline) and line_len >= width:
+                if last_space_pos is not None and last_space_pos != 0:
+                    rollback = line_end - (last_space_idx + 1)
+                    if rollback > 0:
+                        i -= rollback
+                        line_end -= rollback
+                        line_len -= rollback
+
+            lines.append(text[line_start:line_end])
+            ranges.append((line_start, line_end))
+
+            if i < text_len and text[i] == "\n":
+                i += 1
+                continue
+
+        return lines if lines else [""], ranges if ranges else [(0, 0)]
+
+    @staticmethod
+    def span_to_segments(
+        line_ranges: List[Tuple[int, int]],
+        span_start: Optional[int],
+        span_end: Optional[int],
+    ) -> List[Tuple[int, int, int]]:
+        """Map a [start,end) span into (line, col_start, col_end) segments."""
+        segments: List[Tuple[int, int, int]] = []
+        if span_start is None or span_end is None:
+            return segments
+        try:
+            start = int(span_start)
+            end = int(span_end)
+        except Exception:
+            return segments
+        if end <= start:
+            return segments
+        for line_no, (line_start, line_end) in enumerate(line_ranges):
+            if line_end <= start or line_start >= end:
+                continue
+            seg_start = max(start, line_start) - line_start
+            seg_end = min(end, line_end) - line_start
+            if seg_end > seg_start:
+                segments.append((line_no, seg_start, seg_end))
+        return segments
+
+    def build_fullpage_lines(
+        self,
+        chunks: List[str],
+        current_index: int,
+    ) -> Tuple[List[Tuple[str, int]], List[Tuple[int, int]]]:
+        lines, ranges, _ = self.build_fullpage_lines_with_ranges(chunks, current_index)
+        return lines, ranges
+
+    def build_fullpage_lines_with_ranges(
+        self,
+        chunks: List[str],
+        current_index: int,
+    ) -> Tuple[
+        List[Tuple[str, int]],
+        List[Tuple[int, int]],
+        List[List[Tuple[int, int]]],
+    ]:
+        """Return (lines, chunk_line_ranges, line_ranges_by_chunk)."""
+        lines: List[Tuple[str, int]] = []
+        ranges: List[Tuple[int, int]] = []
+        line_ranges_by_chunk: List[List[Tuple[int, int]]] = []
+        width = max(1, self.term_width - 1)
+        for idx, chunk in enumerate(chunks):
+            start_line = len(lines)
+            attr = self.colors.get("past", 0) if idx < current_index else self.colors.get("future", 0)
+            if idx == current_index:
+                attr = self.colors.get("current", 0)
+            wrapped_lines, line_ranges = self.wrap_text_with_ranges(chunk, width)
+            for line in wrapped_lines:
+                lines.append((line, attr))
+            ranges.append((start_line, len(lines)))
+            line_ranges_by_chunk.append(line_ranges)
+            lines.append(("", attr))
+        return lines, ranges, line_ranges_by_chunk
