@@ -226,32 +226,26 @@ class OpenAITTSProvider(TTSProvider):
                 retry_count += 1
                 debug_log_file(f"[OpenAI TTS] Timeout error: {e}")
                 wait_time = min(2 ** retry_count, 30)
-                print(f"Timeout error, waiting {wait_time}s (attempt {retry_count}/{max_retries}): {e}")
                 time.sleep(wait_time)
             except openai.RateLimitError as e:
                 retry_count += 1
                 debug_log_file(f"[OpenAI TTS] Rate limit error: {e}")
                 wait_time = min(2 ** retry_count, 30)
-                print(f"Rate limit error, waiting {wait_time}s (attempt {retry_count}/{max_retries})")
                 time.sleep(wait_time)
             except openai.APIConnectionError as e:
                 retry_count += 1
                 debug_log_file(f"[OpenAI TTS] Connection error: {e}")
                 wait_time = min(2 ** retry_count, 30)
-                print(f"Connection error, waiting {wait_time}s (attempt {retry_count}/{max_retries}): {e}")
                 time.sleep(wait_time)
             except openai.BadRequestError as e:
                 debug_log_file(f"[OpenAI TTS] Bad request error: {e}")
-                print(f"Failed to generate audio due to bad request: {e}")
                 return None
             except Exception as e:
                 debug_log_file(f"[OpenAI TTS] Unexpected error: {e}")
-                print(f"Failed to generate audio due to error: {e}")
                 return None
         
         if response is None:
             debug_log_file(f"[OpenAI TTS] Failed after {max_retries} attempts")
-            print(f"Failed to generate audio after {max_retries} attempts")
             return None
         
         with open(out_file, "wb") as file:
@@ -345,10 +339,10 @@ class GeminiTTSProvider(TTSProvider):
                 retry_count += 1
                 debug_log_file(f"[Gemini TTS] API error: {e}")
                 if retry_count >= max_retries:
-                    print(f"Failed to generate audio after {max_retries} attempts: {e}")
+                    debug_log_file(f"[Gemini TTS] Failed after {max_retries} attempts: {e}")
                     return None
                 wait_time = min(2 ** retry_count, 30)
-                print(f"Gemini error, waiting {wait_time}s (attempt {retry_count}/{max_retries}): {e}")
+                debug_log_file(f"[Gemini TTS] Retrying in {wait_time}s (attempt {retry_count}/{max_retries})")
                 time.sleep(wait_time)
         
         if response is None:
@@ -375,7 +369,6 @@ class GeminiTTSProvider(TTSProvider):
             
             if not audio_data:
                 debug_log_file("[Gemini TTS] No audio data found in response")
-                print("No audio data in Gemini response")
                 return None
             
             # Gemini ALWAYS returns base64-encoded PCM data (as str or bytes)
@@ -391,7 +384,6 @@ class GeminiTTSProvider(TTSProvider):
             
         except Exception as e:
             debug_log_file(f"[Gemini TTS] Error extracting audio: {e}")
-            print(f"Failed to extract audio from Gemini response: {e}")
             return None
     
     def _write_wav(self, pcm_data: bytes, out_file: Path, sample_rate: int = 24000):
