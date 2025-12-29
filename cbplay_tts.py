@@ -321,8 +321,10 @@ class GeminiTTSProvider(TTSProvider):
         while retry_count < max_retries:
             try:
                 debug_log_file(f"[Gemini TTS] API call attempt {retry_count + 1}/{max_retries}")
-                # Format text as TTS instruction to prevent the model from generating text
-                tts_prompt = f"Read aloud the following text:\n\n{raw_text}"
+                if self.instructions:
+                    tts_prompt = f"{self.instructions}\n\nRead aloud the following text:\n\n{raw_text}"
+                else:
+                    tts_prompt = f"Read aloud the following text:\n\n{raw_text}"
                 response = self.client.models.generate_content(
                     model=self.model,
                     contents=tts_prompt,

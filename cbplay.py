@@ -159,8 +159,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--mode', choices=['auto', 'tts', 'stt'], default='auto',
                         help='Mode: auto (stt for audio, tts otherwise), tts, stt')
     
-    parser.add_argument('--provider', choices=['openai', 'gemini'], default='openai',
-                        help='TTS provider: openai or gemini (default: openai)')
+    parser.add_argument('--provider', choices=['openai', 'gemini'], default='gemini',
+                        help='TTS provider: openai or gemini (default: gemini)')
     
     openai_voices_str = ', '.join(OPENAI_VOICES)
     gemini_voices_str = ', '.join(GEMINI_VOICES[:5]) + '...'

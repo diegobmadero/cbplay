@@ -88,6 +88,7 @@ def transcribe_audio_words(audio_path: Path, model: str = "gpt-4o-transcribe", t
         debug_log_file(f"transcribe_audio_words Exception: {type(e).__name__} {e}")
         return None
 
+    debug_log_file(f"transcribe_audio_words API call complete, parsing response...")
     data = response
     if not isinstance(data, dict):
         try:
@@ -120,8 +121,10 @@ def transcribe_audio_words(audio_path: Path, model: str = "gpt-4o-transcribe", t
             words = flattened
 
     if not isinstance(words, list) or not words:
+        debug_log_file(f"transcribe_audio_words: no words found in response")
         return None
 
+    debug_log_file(f"transcribe_audio_words: found {len(words)} raw words")
     normalized = []
     for item in words:
         if isinstance(item, dict):
@@ -140,6 +143,7 @@ def transcribe_audio_words(audio_path: Path, model: str = "gpt-4o-transcribe", t
         except Exception:
             continue
         normalized.append({"word": word, "start": start, "end": end})
+    debug_log_file(f"transcribe_audio_words: returning {len(normalized) if normalized else 0} normalized words")
     return normalized if normalized else None
 
 

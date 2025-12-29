@@ -119,7 +119,8 @@ def _play_ansi_mode(
         use_ffplay = ffplay_available()
         rewind_padding = max(0.0, float(resume_rewind or 0.0))
         highlight_enabled = bool(highlight)
-        
+        debug_log_file(f"[ANSI] highlight_enabled={highlight_enabled}, highlight_model={highlight_model}")
+        ui_debug = bool(ui_debug)
         try:
             highlight_context_words = max(0, int(highlight_window or 0))
         except Exception:
@@ -213,10 +214,12 @@ def _play_ansi_mode(
                     highlight_task_queue.task_done()
 
         if highlight_enabled:
+            debug_log_file(f"[ANSI] Starting 2 highlight_worker threads")
             for _ in range(2):
                 threading.Thread(target=highlight_worker, daemon=True).start()
 
         def schedule_word_timestamps(audio_path, text):
+            debug_log_file(f"[ANSI] schedule_word_timestamps called: audio={audio_path}, text={text[:50]}...")
             cache_path = word_cache_path_for_text(text)
             if cache_path.exists():
                 existing = load_word_timestamps(cache_path, expected_model=highlight_model)
@@ -690,6 +693,7 @@ def _play_curses_mode(
     use_ffplay = ffplay_available()
     rewind_padding = max(0.0, float(resume_rewind or 0.0))
     highlight_enabled = bool(highlight)
+    debug_log_file(f"[CURSES] highlight_enabled={highlight_enabled}, highlight_model={highlight_model}")
     
     try:
         highlight_context_words = max(0, int(highlight_window or 0))
@@ -719,10 +723,13 @@ def _play_curses_mode(
                 if existing and existing.get("status") == "ok":
                     continue
                 words = transcribe_audio_words(Path(audio_path), model=highlight_model)
+                debug_log_file(f"[CURSES] highlight_worker got words={len(words) if words else 0}")
                 if words:
                     save_word_timestamps(cache_path, highlight_model, words, status="ok", error=None)
+                    debug_log_file(f"[CURSES] highlight_worker saved {len(words)} words to {cache_path}")
                 else:
                     save_word_timestamps(cache_path, highlight_model, [], status="error", error="No word timestamps returned")
+                    debug_log_file(f"[CURSES] highlight_worker saved error (no words)")
             except Exception as e:
                 debug_print(f"Highlight transcription worker failed: {e}")
                 try:
@@ -735,10 +742,12 @@ def _play_curses_mode(
                 highlight_task_queue.task_done()
 
     if highlight_enabled:
+        debug_log_file(f"[CURSES] Starting 2 highlight_worker threads")
         for _ in range(2):
             threading.Thread(target=highlight_worker, daemon=True).start()
 
     def schedule_word_timestamps(audio_path, text):
+        debug_log_file(f"[CURSES] schedule_word_timestamps called: audio={audio_path}, text={text[:50] if text else '?'}...")
         cache_path = word_cache_path_for_text(text)
         if cache_path.exists():
             existing = load_word_timestamps(cache_path, expected_model=highlight_model)
@@ -810,6 +819,53 @@ def _play_curses_mode(
             screen.draw_pad_lines(full_lines)
             compute_pad_top()
             needs_full_render = False
+
+        def redraw_current_chunk_base():
+            if current_index < 0 or current_index >= len(chunk_line_ranges):
+                return
+            start, end = chunk_line_ranges[current_index]
+            for pad_line in range(start, end):
+                if 0 <= pad_line < len(full_lines):
+                    text, attr = full_lines[pad_line]
+                    screen._safe_addnstr(screen.body_pad, pad_line, 0, text, attr)
+
+        def apply_highlights(dim_span, highlight_span, word_span):
+            if not highlight_enabled:
+                return
+            if current_index < 0 or current_index >= len(chunk_line_ranges):
+                return
+            if current_index >= len(line_ranges_by_chunk):
+                return
+            redraw_current_chunk_base()
+            line_ranges = line_ranges_by_chunk[current_index]
+            chunk_start_line = chunk_line_ranges[current_index][0]
+            if dim_span:
+                screen.apply_span(
+                    chunk_start_line,
+                    line_ranges,
+                    dim_span[0],
+                    dim_span[1],
+                    full_lines,
+                    screen.colors.get("spoken", 0),
+                )
+            if highlight_span:
+                screen.apply_span(
+                    chunk_start_line,
+                    line_ranges,
+                    highlight_span[0],
+                    highlight_span[1],
+                    full_lines,
+                    screen.colors.get("current", 0) | curses.A_UNDERLINE,
+                )
+            if word_span:
+                screen.apply_span(
+                    chunk_start_line,
+                    line_ranges,
+                    word_span[0],
+                    word_span[1],
+                    full_lines,
+                    screen.colors.get("current_word", 0),
+                )
 
         def build_status_line(paused: bool, playhead: float, duration: float):
             if not generation_done and total_chunks > 0:
@@ -897,6 +953,7 @@ def _play_curses_mode(
                 continue
 
             audio_file, original_text_chunk = current_text_chunk
+            debug_log_file(f"[CURSES] Playing chunk: audio={audio_file}, text={original_text_chunk[:50] if original_text_chunk else '?'}...")
             cleaned_text = original_text_chunk
             audio_duration = get_audio_duration(audio_file)
 
@@ -935,6 +992,7 @@ def _play_curses_mode(
                 tokens = extract_text_tokens(cleaned_text)
                 word_to_token = align_words_to_text(words, tokens)
 
+            apply_highlights(current_dim_span, current_highlight_span, current_highlight_word_span)
             refresh_ui(False, 0.0, audio_duration, "")
 
             playback_offset = 0.0
@@ -950,6 +1008,7 @@ def _play_curses_mode(
                 if screen.handle_resize():
                     needs_full_render = True
                     rebuild_fullpage()
+                    apply_highlights(current_dim_span, current_highlight_span, current_highlight_word_span)
                     refresh_ui(paused, playhead, audio_duration, "")
 
                 ch = stdscr.getch()
@@ -1022,12 +1081,14 @@ def _play_curses_mode(
                         words_status = "ok"
                         words_error = None
                         words = payload.get("words") or None
+                        debug_log_file(f"[CURSES] words_status changed to OK, words={len(words) if words else 0}")
                         current_word_index = -1
                         tokens = extract_text_tokens(cleaned_text)
                         word_to_token = align_words_to_text(words, tokens)
                     else:
                         words_status = "error"
                         words_error = payload.get("error")
+                        debug_log_file(f"[CURSES] words_status changed to ERROR: {words_error}")
 
                 if highlight_enabled:
                     playhead = max(0.0, playback_offset + (time.monotonic() - playback_started_at) - playback_lag)
@@ -1037,6 +1098,35 @@ def _play_curses_mode(
                         current_word_index += 1
                     while current_word_index >= 0 and playhead < words[current_word_index].get("start", 0.0):
                         current_word_index -= 1
+
+                new_context_span = None
+                new_word_span = None
+                new_dim_span = None
+                if words and word_to_token and tokens and current_word_index >= 0:
+                    spans = []
+                    for wi in range(current_word_index - highlight_context_words, current_word_index + highlight_context_words + 1):
+                        if 0 <= wi < len(word_to_token):
+                            token_idx = word_to_token[wi]
+                            if token_idx is not None and 0 <= token_idx < len(tokens):
+                                t = tokens[token_idx]
+                                spans.append((t["start"], t["end"]))
+                    if spans:
+                        new_context_span = (min(s for s, _ in spans), max(e for _, e in spans))
+                    if 0 <= current_word_index < len(word_to_token):
+                        token_idx = word_to_token[current_word_index]
+                        if token_idx is not None and 0 <= token_idx < len(tokens):
+                            t = tokens[token_idx]
+                            new_word_span = (t["start"], t["end"])
+                            if t["start"] > 0:
+                                new_dim_span = (0, t["start"])
+
+                if (new_context_span != current_highlight_span or 
+                    new_word_span != current_highlight_word_span or 
+                    new_dim_span != current_dim_span):
+                    current_highlight_span = new_context_span
+                    current_highlight_word_span = new_word_span
+                    current_dim_span = new_dim_span
+                    apply_highlights(current_dim_span, current_highlight_span, current_highlight_word_span)
 
                 refresh_ui(paused, playhead, audio_duration, "")
 
