@@ -128,14 +128,33 @@ class CursesKaraokeScreen:
         if self.header_win is None:
             return
         self.header_win.erase()
+        margin = getattr(self, "margin_left", 0)
+        width = getattr(self, "text_width", self.term_width)
+        
         for idx in range(min(len(lines), self.layout.header_rows)):
-            self._safe_addnstr(self.header_win, idx, 0, lines[idx], self.colors.get("info", 0))
+            text = lines[idx]
+            if len(text) > width:
+                text = text[:width]
+            
+            try:
+                self.header_win.addstr(idx, margin, text, self.colors.get("info", 0))
+            except curses.error:
+                pass
 
     def draw_footer(self, text: str, attr: int = 0):
         if self.footer_win is None:
             return
         self.footer_win.erase()
-        self._safe_addnstr(self.footer_win, 0, 0, text, attr or self.colors.get("info", 0))
+        margin = getattr(self, "margin_left", 0)
+        width = getattr(self, "text_width", self.term_width)
+        
+        if len(text) > width:
+            text = text[:width]
+            
+        try:
+            self.footer_win.addstr(0, margin, text, attr or self.colors.get("info", 0))
+        except curses.error:
+            pass
 
     def draw_pad_lines(self, lines: List[Tuple[str, int]]):
         self._ensure_pad(len(lines))

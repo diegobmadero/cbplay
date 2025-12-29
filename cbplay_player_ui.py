@@ -805,12 +805,15 @@ def _play_curses_mode(
                 pad_top = 0
                 return
             start, end = chunk_line_ranges[current_index]
-            if end - start >= screen.body_height:
-                pad_top = max(0, start)
-                return
-            target = max(0, start - max(1, int(screen.body_height * 0.2)))
+            
+            chunk_height = end - start
+            screen_center = screen.body_height // 2
+            
+            target_offset = max(0, screen_center - (chunk_height // 2) if chunk_height < screen.body_height else 0)
+            
+            target_top = max(0, start - target_offset)
             max_top = max(0, screen.pad_height - screen.body_height)
-            pad_top = min(target, max_top)
+            pad_top = min(target_top, max_top)
 
         def rebuild_fullpage():
             nonlocal full_lines, chunk_line_ranges, line_ranges_by_chunk, needs_full_render
