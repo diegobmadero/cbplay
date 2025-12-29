@@ -6,8 +6,9 @@ from typing import Dict, List, Optional, Tuple
 
 @dataclass(frozen=True)
 class CursesLayout:
-    header_rows: int = 2
+    header_rows: int = 1
     footer_rows: int = 1
+    border: bool = True
 
 
 @dataclass(frozen=True)
@@ -18,12 +19,15 @@ class WrappedChunk:
 
 
 class CursesKaraokeScreen:
+    BOX_TL, BOX_TR, BOX_BL, BOX_BR = '╭', '╮', '╰', '╯'
+    BOX_H, BOX_V = '─', '│'
+    BOX_LT, BOX_RT = '├', '┤'
+
     def __init__(self, stdscr, layout: Optional[CursesLayout] = None, debug: bool = False):
         self.stdscr = stdscr
         self.layout = layout or CursesLayout()
         self.debug = bool(debug)
         self.term_height, self.term_width = self.stdscr.getmaxyx()
-        self.body_height = max(1, self.term_height - self.layout.header_rows - self.layout.footer_rows)
         self.body_pad = None
         self.pad_height = 0
         self.pad_width = 0
@@ -81,15 +85,35 @@ class CursesKaraokeScreen:
 
     def _rebuild_windows(self):
         self.term_height, self.term_width = self.stdscr.getmaxyx()
-        self.body_height = max(1, self.term_height - self.layout.header_rows - self.layout.footer_rows)
-        self.header_win = self.stdscr.derwin(self.layout.header_rows, self.term_width, 0, 0)
-        self.footer_win = self.stdscr.derwin(
-            self.layout.footer_rows, self.term_width, self.term_height - self.layout.footer_rows, 0
-        )
+        
+        if self.layout.border:
+            self.border_left = 1
+            self.border_right = 1
+            self.header_y = 1
+            self.header_sep_y = 2
+            self.body_start_y = 3
+            self.footer_sep_y = self.term_height - 3
+            self.footer_y = self.term_height - 2
+            self.body_height = max(1, self.term_height - 6)
+            content_width = self.term_width - 2
+        else:
+            self.border_left = 0
+            self.border_right = 0
+            self.header_y = 0
+            self.header_sep_y = -1
+            self.body_start_y = self.layout.header_rows
+            self.footer_sep_y = -1
+            self.footer_y = self.term_height - self.layout.footer_rows
+            self.body_height = max(1, self.term_height - self.layout.header_rows - self.layout.footer_rows)
+            content_width = self.term_width
         
         self.max_text_width = 90
-        self.text_width = min(self.max_text_width, self.term_width - 4)
-        self.margin_left = (self.term_width - self.text_width) // 2
+        self.text_width = min(self.max_text_width, content_width - 4)
+        self.content_width = content_width
+        self.margin_left = (content_width - self.text_width) // 2
+        
+        self.header_win = None
+        self.footer_win = None
         
         self._ensure_pad(self.body_height)
 
@@ -110,12 +134,31 @@ class CursesKaraokeScreen:
 
     def clear(self):
         self.stdscr.erase()
-        if self.header_win is not None:
-            self.header_win.erase()
-        if self.footer_win is not None:
-            self.footer_win.erase()
         if self.body_pad is not None:
             self.body_pad.erase()
+
+    def draw_border(self):
+        if not self.layout.border:
+            return
+        w = self.term_width
+        h = self.term_height
+        attr = self.colors.get("info", 0)
+        
+        try:
+            self.stdscr.addstr(0, 0, self.BOX_TL + self.BOX_H * (w - 2) + self.BOX_TR, attr)
+            self.stdscr.addstr(self.header_sep_y, 0, self.BOX_LT + self.BOX_H * (w - 2) + self.BOX_RT, attr)
+            self.stdscr.addstr(self.footer_sep_y, 0, self.BOX_LT + self.BOX_H * (w - 2) + self.BOX_RT, attr)
+            self.stdscr.addnstr(h - 1, 0, self.BOX_BL + self.BOX_H * (w - 2) + self.BOX_BR, w, attr)
+            
+            for y in [self.header_y, self.footer_y]:
+                self.stdscr.addstr(y, 0, self.BOX_V, attr)
+                self.stdscr.addstr(y, w - 1, self.BOX_V, attr)
+            
+            for y in range(self.body_start_y, self.footer_sep_y):
+                self.stdscr.addstr(y, 0, self.BOX_V, attr)
+                self.stdscr.addstr(y, w - 1, self.BOX_V, attr)
+        except curses.error:
+            pass
 
     def _safe_addnstr(self, win, y: int, x: int, text: str, attr: int = 0):
         if win is None:
@@ -126,34 +169,46 @@ class CursesKaraokeScreen:
             pass
 
     def draw_header(self, lines: List[str]):
-        if self.header_win is None:
-            return
-        self.header_win.erase()
-        margin = getattr(self, "margin_left", 0)
-        width = getattr(self, "text_width", self.term_width)
+        screen_margin = self.margin_left + self.border_left
+        width = self.text_width
+        y = self.header_y
         
-        for idx in range(min(len(lines), self.layout.header_rows)):
-            text = lines[idx]
+        if self.layout.border:
+            self.stdscr.move(y, self.border_left)
+            self.stdscr.clrtoeol()
+            if self.term_width > 1:
+                try:
+                    self.stdscr.addstr(y, self.term_width - 1, self.BOX_V, self.colors.get("info", 0))
+                except curses.error:
+                    pass
+        
+        for idx, text in enumerate(lines[:self.layout.header_rows]):
             if len(text) > width:
                 text = text[:width]
-            
             try:
-                self.header_win.addstr(idx, margin, text, self.colors.get("info", 0))
+                self.stdscr.addstr(y + idx, screen_margin, text, self.colors.get("info", 0))
             except curses.error:
                 pass
 
     def draw_footer(self, text: str, attr: int = 0):
-        if self.footer_win is None:
-            return
-        self.footer_win.erase()
-        margin = getattr(self, "margin_left", 0)
-        max_chars = max(0, self.term_width - margin - 1)
+        screen_margin = self.margin_left + self.border_left
+        y = self.footer_y
+        max_chars = min(self.text_width, self.term_width - screen_margin - self.border_right - 1)
+        
+        if self.layout.border:
+            self.stdscr.move(y, self.border_left)
+            self.stdscr.clrtoeol()
+            if self.term_width > 1:
+                try:
+                    self.stdscr.addstr(y, self.term_width - 1, self.BOX_V, self.colors.get("info", 0))
+                except curses.error:
+                    pass
         
         if len(text) > max_chars:
             text = text[:max_chars]
             
         try:
-            self.footer_win.addnstr(0, margin, text, max_chars, attr or self.colors.get("info", 0))
+            self.stdscr.addnstr(y, screen_margin, text, max_chars, attr or self.colors.get("info", 0))
         except curses.error:
             pass
 
@@ -195,20 +250,18 @@ class CursesKaraokeScreen:
             self._safe_addnstr(self.body_pad, pad_line, margin + indent + col_start, line_text[col_start:end], attr)
 
     def refresh(self, pad_top: int = 0):
-        if self.header_win is not None:
-            self.header_win.noutrefresh()
+        self.stdscr.noutrefresh()
         if self.body_pad is not None:
             top = max(0, min(pad_top, max(0, self.pad_height - self.body_height)))
+            body_end_y = self.body_start_y + self.body_height - 1
             self.body_pad.noutrefresh(
                 top,
                 0,
-                self.layout.header_rows,
-                0,
-                self.layout.header_rows + self.body_height - 1,
-                self.term_width - 1,
+                self.body_start_y,
+                self.border_left,
+                body_end_y,
+                self.term_width - 1 - self.border_right,
             )
-        if self.footer_win is not None:
-            self.footer_win.noutrefresh()
         curses.doupdate()
 
     def wrap_text_basic(self, text: str, width: int) -> List[str]:

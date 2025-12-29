@@ -904,6 +904,7 @@ def _play_curses_mode(
             status_line = build_status_line(paused, playhead, duration)
             footer_text = debug_line if debug_line else "Space: Pause/Resume  |  ↑↓: Navigate  |  Q: Exit"
             
+            screen.draw_border()
             screen.draw_header([status_line])
             screen.draw_footer(footer_text)
             screen.refresh(pad_top)
