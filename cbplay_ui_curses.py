@@ -43,14 +43,40 @@ class CursesKaraokeScreen:
         if curses.has_colors():
             curses.start_color()
             curses.use_default_colors()
-        self.colors = {
-            "current": curses.A_BOLD,
-            "future": curses.A_NORMAL,
-            "past": curses.A_DIM,
-            "current_word": curses.A_BOLD | curses.A_REVERSE,
-            "spoken": curses.A_DIM,
-            "info": curses.A_DIM,
-        }
+            try:
+                curses.init_pair(1, curses.COLOR_CYAN, -1)
+                curses.init_pair(2, curses.COLOR_WHITE, -1)
+                curses.init_pair(3, curses.COLOR_GREEN, -1)
+                
+                self.colors = {
+                    "current": curses.A_BOLD,
+                    "future": curses.A_NORMAL,
+                    "past": curses.color_pair(2) | curses.A_DIM,
+                    "current_word": curses.color_pair(1) | curses.A_REVERSE | curses.A_BOLD,
+                    "spoken": curses.color_pair(2) | curses.A_DIM,
+                    "info": curses.color_pair(3),
+                    "header": curses.A_BOLD | curses.color_pair(3),
+                }
+            except Exception:
+                 self.colors = {
+                    "current": curses.A_BOLD,
+                    "future": curses.A_NORMAL,
+                    "past": curses.A_DIM,
+                    "current_word": curses.A_BOLD | curses.A_REVERSE,
+                    "spoken": curses.A_DIM,
+                    "info": curses.A_DIM,
+                    "header": curses.A_BOLD,
+                }
+        else:
+            self.colors = {
+                "current": curses.A_BOLD,
+                "future": curses.A_NORMAL,
+                "past": curses.A_DIM,
+                "current_word": curses.A_BOLD | curses.A_REVERSE,
+                "spoken": curses.A_DIM,
+                "info": curses.A_DIM,
+                "header": curses.A_BOLD,
+            }
 
     def _rebuild_windows(self):
         self.term_height, self.term_width = self.stdscr.getmaxyx()
@@ -59,6 +85,11 @@ class CursesKaraokeScreen:
         self.footer_win = self.stdscr.derwin(
             self.layout.footer_rows, self.term_width, self.term_height - self.layout.footer_rows, 0
         )
+        
+        self.max_text_width = 90
+        self.text_width = min(self.max_text_width, self.term_width - 4)
+        self.margin_left = (self.term_width - self.text_width) // 2
+        
         self._ensure_pad(self.body_height)
 
     def _ensure_pad(self, needed_lines: int):
@@ -111,8 +142,9 @@ class CursesKaraokeScreen:
         if self.body_pad is None:
             return
         self.body_pad.erase()
+        margin = getattr(self, "margin_left", 0)
         for y, (text, attr) in enumerate(lines):
-            self._safe_addnstr(self.body_pad, y, 0, text, attr)
+            self._safe_addnstr(self.body_pad, y, margin, text, attr)
 
     def apply_span(
         self,
@@ -128,6 +160,7 @@ class CursesKaraokeScreen:
         segments = self.span_to_segments(line_ranges, span_start, span_end)
         if not segments:
             return
+        margin = getattr(self, "margin_left", 0)
         for line_no, col_start, col_end in segments:
             pad_line = chunk_start_line + line_no
             if pad_line < 0 or pad_line >= len(lines):
@@ -138,7 +171,7 @@ class CursesKaraokeScreen:
             end = min(col_end, len(line_text))
             if end <= col_start:
                 continue
-            self._safe_addnstr(self.body_pad, pad_line, col_start, line_text[col_start:end], attr)
+            self._safe_addnstr(self.body_pad, pad_line, margin + col_start, line_text[col_start:end], attr)
 
     def refresh(self, pad_top: int = 0):
         if self.header_win is not None:
@@ -260,11 +293,11 @@ class CursesKaraokeScreen:
         List[Tuple[int, int]],
         List[List[Tuple[int, int]]],
     ]:
-        """Return (lines, chunk_line_ranges, line_ranges_by_chunk)."""
         lines: List[Tuple[str, int]] = []
         ranges: List[Tuple[int, int]] = []
         line_ranges_by_chunk: List[List[Tuple[int, int]]] = []
-        width = max(1, self.term_width - 1)
+        width = getattr(self, "text_width", max(1, self.term_width - 1))
+        
         for idx, chunk in enumerate(chunks):
             start_line = len(lines)
             attr = self.colors.get("past", 0) if idx < current_index else self.colors.get("future", 0)

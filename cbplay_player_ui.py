@@ -824,10 +824,11 @@ def _play_curses_mode(
             if current_index < 0 or current_index >= len(chunk_line_ranges):
                 return
             start, end = chunk_line_ranges[current_index]
+            margin = getattr(screen, "margin_left", 0)
             for pad_line in range(start, end):
                 if 0 <= pad_line < len(full_lines):
                     text, attr = full_lines[pad_line]
-                    screen._safe_addnstr(screen.body_pad, pad_line, 0, text, attr)
+                    screen._safe_addnstr(screen.body_pad, pad_line, margin, text, attr)
 
         def apply_highlights(dim_span, highlight_span, word_span):
             if not highlight_enabled:
@@ -855,7 +856,7 @@ def _play_curses_mode(
                     highlight_span[0],
                     highlight_span[1],
                     full_lines,
-                    screen.colors.get("current", 0) | curses.A_UNDERLINE,
+                    screen.colors.get("current", 0),
                 )
             if word_span:
                 screen.apply_span(
@@ -876,10 +877,16 @@ def _play_curses_mode(
                 return f"Generating: [{bar}] {percent:.0f}% ({generated_chunks}/{total_chunks})"
             total = effective_total_count()
             if current_index >= 0 and total > 0:
-                icon = "⏸" if paused else "▶"
-                line = f"{icon} Now Playing [{current_index + 1}/{total}]"
+                icon = "⏸ " if paused else "▶ "
+                
+                bar_width = 30
+                pct = 0.0
                 if duration > 0:
-                    line += f"  {playhead:.1f}s/{duration:.1f}s"
+                    pct = min(1.0, max(0.0, playhead / duration))
+                filled = int(bar_width * pct)
+                bar = "━" * filled + "─" * (bar_width - filled)
+                
+                line = f"{icon} [{current_index + 1}/{total}]  {bar}  {playhead:.1f}s/{duration:.1f}s"
                 return line
             return "Waiting for audio..."
 
