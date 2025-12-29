@@ -162,7 +162,7 @@ class AnsiKaraokeRenderer:
         text: str,
         highlight_spans=None,
         paused: bool = False,
-        debug_line: str = None,
+        debug_line: str = "",
         chunk_index: int = 0,
         total_chunks: int = 0,
         playhead: float = 0.0,
