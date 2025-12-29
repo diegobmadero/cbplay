@@ -147,13 +147,13 @@ class CursesKaraokeScreen:
             return
         self.footer_win.erase()
         margin = getattr(self, "margin_left", 0)
-        width = getattr(self, "text_width", self.term_width)
+        max_chars = max(0, self.term_width - margin - 1)
         
-        if len(text) > width:
-            text = text[:width]
+        if len(text) > max_chars:
+            text = text[:max_chars]
             
         try:
-            self.footer_win.addstr(0, margin, text, attr or self.colors.get("info", 0))
+            self.footer_win.addnstr(0, margin, text, max_chars, attr or self.colors.get("info", 0))
         except curses.error:
             pass
 
@@ -197,8 +197,6 @@ class CursesKaraokeScreen:
     def refresh(self, pad_top: int = 0):
         if self.header_win is not None:
             self.header_win.noutrefresh()
-        if self.footer_win is not None:
-            self.footer_win.noutrefresh()
         if self.body_pad is not None:
             top = max(0, min(pad_top, max(0, self.pad_height - self.body_height)))
             self.body_pad.noutrefresh(
@@ -209,6 +207,8 @@ class CursesKaraokeScreen:
                 self.layout.header_rows + self.body_height - 1,
                 self.term_width - 1,
             )
+        if self.footer_win is not None:
+            self.footer_win.noutrefresh()
         curses.doupdate()
 
     def wrap_text_basic(self, text: str, width: int) -> List[str]:
