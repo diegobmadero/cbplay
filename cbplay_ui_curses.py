@@ -1,5 +1,6 @@
-from dataclasses import dataclass
 import curses
+import re
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 
@@ -49,7 +50,7 @@ class CursesKaraokeScreen:
                 curses.init_pair(3, curses.COLOR_GREEN, -1)
                 
                 self.colors = {
-                    "current": curses.A_BOLD,
+                    "current": curses.A_NORMAL,
                     "future": curses.A_NORMAL,
                     "past": curses.color_pair(2) | curses.A_DIM,
                     "current_word": curses.color_pair(1) | curses.A_REVERSE | curses.A_BOLD,
@@ -59,7 +60,7 @@ class CursesKaraokeScreen:
                 }
             except Exception:
                  self.colors = {
-                    "current": curses.A_BOLD,
+                    "current": curses.A_NORMAL,
                     "future": curses.A_NORMAL,
                     "past": curses.A_DIM,
                     "current_word": curses.A_BOLD | curses.A_REVERSE,
@@ -69,7 +70,7 @@ class CursesKaraokeScreen:
                 }
         else:
             self.colors = {
-                "current": curses.A_BOLD,
+                "current": curses.A_NORMAL,
                 "future": curses.A_NORMAL,
                 "past": curses.A_DIM,
                 "current_word": curses.A_BOLD | curses.A_REVERSE,
@@ -156,14 +157,14 @@ class CursesKaraokeScreen:
         except curses.error:
             pass
 
-    def draw_pad_lines(self, lines: List[Tuple[str, int]]):
+    def draw_pad_lines(self, lines: List[Tuple[str, int, int]]):
         self._ensure_pad(len(lines))
         if self.body_pad is None:
             return
         self.body_pad.erase()
         margin = getattr(self, "margin_left", 0)
-        for y, (text, attr) in enumerate(lines):
-            self._safe_addnstr(self.body_pad, y, margin, text, attr)
+        for y, (text, attr, indent) in enumerate(lines):
+            self._safe_addnstr(self.body_pad, y, margin + indent, text, attr)
 
     def apply_span(
         self,
@@ -171,7 +172,7 @@ class CursesKaraokeScreen:
         line_ranges: List[Tuple[int, int]],
         span_start: Optional[int],
         span_end: Optional[int],
-        lines: List[Tuple[str, int]],
+        lines: List[Tuple[str, int, int]],
         attr: int,
     ):
         if self.body_pad is None or not lines:
@@ -185,12 +186,13 @@ class CursesKaraokeScreen:
             if pad_line < 0 or pad_line >= len(lines):
                 continue
             line_text = lines[pad_line][0]
+            indent = lines[pad_line][2]
             if not line_text or col_start >= len(line_text):
                 continue
             end = min(col_end, len(line_text))
             if end <= col_start:
                 continue
-            self._safe_addnstr(self.body_pad, pad_line, margin + col_start, line_text[col_start:end], attr)
+            self._safe_addnstr(self.body_pad, pad_line, margin + indent + col_start, line_text[col_start:end], attr)
 
     def refresh(self, pad_top: int = 0):
         if self.header_win is not None:
@@ -221,53 +223,76 @@ class CursesKaraokeScreen:
                 start += width
         return lines if lines else [""]
 
-    def wrap_text_with_ranges(self, text: str, width: int) -> Tuple[List[str], List[Tuple[int, int]]]:
-        """Wrap text while preserving exact indices, returning line ranges."""
+    def wrap_text_with_ranges(self, text: str, width: int) -> Tuple[List[str], List[Tuple[int, int]], List[int]]:
+        """Wrap text while preserving exact indices, returning lines, ranges, and indents."""
         if width <= 0:
             width = 1
         text = text or ""
         if not text:
-            return [""], [(0, 0)]
+            return [""], [(0, 0)], [0]
         lines: List[str] = []
         ranges: List[Tuple[int, int]] = []
+        indents: List[int] = []
         i = 0
         text_len = len(text)
+        
         while i < text_len:
-            line_start = i
-            line_len = 0
-            last_space_pos = None
-            last_space_idx = None
-            broke_on_newline = False
+            current_hanging_indent = 0
+            remaining_text = text[i:]
+            match = re.match(r'^(\s*[•\-\*]|\d+\.)\s+', remaining_text)
+            if match:
+                current_hanging_indent = len(match.group(0))
+                if current_hanging_indent > width // 2:
+                    current_hanging_indent = 0
+            
+            first_line_of_logical = True
             while i < text_len:
-                ch = text[i]
-                if ch == "\n":
-                    broke_on_newline = True
+                line_start = i
+                
+                effective_width = width
+                if not first_line_of_logical:
+                    effective_width = width - current_hanging_indent
+                if effective_width < 1: 
+                    effective_width = 1
+                
+                line_len = 0
+                last_space_pos = None
+                last_space_idx = None
+                broke_on_newline = False
+                
+                while i < text_len:
+                    ch = text[i]
+                    if ch == "\n":
+                        broke_on_newline = True
+                        break
+                    line_len += 1
+                    if ch.isspace():
+                        last_space_pos = line_len - 1
+                        last_space_idx = i
+                    i += 1
+                    if line_len >= effective_width:
+                        break
+
+                line_end = i
+                if i < text_len and (not broke_on_newline) and line_len >= effective_width:
+                    if last_space_pos is not None and last_space_pos != 0:
+                        rollback = line_end - (last_space_idx + 1)
+                        if rollback > 0:
+                            i -= rollback
+                            line_end -= rollback
+                            line_len -= rollback
+
+                lines.append(text[line_start:line_end])
+                ranges.append((line_start, line_end))
+                indents.append(current_hanging_indent if not first_line_of_logical else 0)
+                
+                first_line_of_logical = False
+
+                if i < text_len and text[i] == "\n":
+                    i += 1
                     break
-                line_len += 1
-                if ch.isspace():
-                    last_space_pos = line_len - 1
-                    last_space_idx = i
-                i += 1
-                if line_len >= width:
-                    break
 
-            line_end = i
-            if i < text_len and (not broke_on_newline) and line_len >= width:
-                if last_space_pos is not None and last_space_pos != 0:
-                    rollback = line_end - (last_space_idx + 1)
-                    if rollback > 0:
-                        i -= rollback
-                        line_end -= rollback
-                        line_len -= rollback
-
-            lines.append(text[line_start:line_end])
-            ranges.append((line_start, line_end))
-
-            if i < text_len and text[i] == "\n":
-                i += 1
-                continue
-
-        return lines if lines else [""], ranges if ranges else [(0, 0)]
+        return lines if lines else [""], ranges if ranges else [(0, 0)], indents if indents else [0]
 
     @staticmethod
     def span_to_segments(
@@ -299,7 +324,7 @@ class CursesKaraokeScreen:
         self,
         chunks: List[str],
         current_index: int,
-    ) -> Tuple[List[Tuple[str, int]], List[Tuple[int, int]]]:
+    ) -> Tuple[List[Tuple[str, int, int]], List[Tuple[int, int]]]:
         lines, ranges, _ = self.build_fullpage_lines_with_ranges(chunks, current_index)
         return lines, ranges
 
@@ -308,11 +333,11 @@ class CursesKaraokeScreen:
         chunks: List[str],
         current_index: int,
     ) -> Tuple[
-        List[Tuple[str, int]],
+        List[Tuple[str, int, int]],
         List[Tuple[int, int]],
         List[List[Tuple[int, int]]],
     ]:
-        lines: List[Tuple[str, int]] = []
+        lines: List[Tuple[str, int, int]] = []
         ranges: List[Tuple[int, int]] = []
         line_ranges_by_chunk: List[List[Tuple[int, int]]] = []
         width = getattr(self, "text_width", max(1, self.term_width - 1))
@@ -322,10 +347,22 @@ class CursesKaraokeScreen:
             attr = self.colors.get("past", 0) if idx < current_index else self.colors.get("future", 0)
             if idx == current_index:
                 attr = self.colors.get("current", 0)
-            wrapped_lines, line_ranges = self.wrap_text_with_ranges(chunk, width)
-            for line in wrapped_lines:
-                lines.append((line, attr))
+            
+            is_header = False
+            stripped = chunk.strip()
+            if len(stripped) < 60 and "\n" not in stripped:
+                if stripped.endswith(":") or (stripped.isupper() and len(stripped) > 4):
+                     is_header = True
+            
+            if is_header:
+                attr = self.colors.get("header", 0)
+            
+            wrapped_lines, line_ranges, indents = self.wrap_text_with_ranges(chunk, width)
+            for i, line in enumerate(wrapped_lines):
+                indent = indents[i] if i < len(indents) else 0
+                lines.append((line, attr, indent))
+            
             ranges.append((start_line, len(lines)))
             line_ranges_by_chunk.append(line_ranges)
-            lines.append(("", attr))
+            lines.append(("", attr, 0))
         return lines, ranges, line_ranges_by_chunk

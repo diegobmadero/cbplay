@@ -830,8 +830,8 @@ def _play_curses_mode(
             margin = getattr(screen, "margin_left", 0)
             for pad_line in range(start, end):
                 if 0 <= pad_line < len(full_lines):
-                    text, attr = full_lines[pad_line]
-                    screen._safe_addnstr(screen.body_pad, pad_line, margin, text, attr)
+                    text, attr, indent = full_lines[pad_line]
+                    screen._safe_addnstr(screen.body_pad, pad_line, margin + indent, text, attr)
 
         def apply_highlights(dim_span, highlight_span, word_span):
             if not highlight_enabled:
@@ -871,6 +871,10 @@ def _play_curses_mode(
                     screen.colors.get("current_word", 0),
                 )
 
+        def format_time(seconds):
+            m, s = divmod(int(seconds), 60)
+            return f"{m:02d}:{s:02d}"
+
         def build_status_line(paused: bool, playhead: float, duration: float):
             if not generation_done and total_chunks > 0:
                 percent = (generated_chunks / total_chunks) * 100
@@ -878,6 +882,7 @@ def _play_curses_mode(
                 filled = int(bar_length * generated_chunks / total_chunks)
                 bar = "#" * filled + "-" * (bar_length - filled)
                 return f"Generating: [{bar}] {percent:.0f}% ({generated_chunks}/{total_chunks})"
+            
             total = effective_total_count()
             if current_index >= 0 and total > 0:
                 icon = "⏸ " if paused else "▶ "
@@ -887,19 +892,20 @@ def _play_curses_mode(
                 if duration > 0:
                     pct = min(1.0, max(0.0, playhead / duration))
                 filled = int(bar_width * pct)
-                bar = "━" * filled + "─" * (bar_width - filled)
+                bar = "━" * filled + "●" + "─" * max(0, bar_width - filled - 1)
                 
-                line = f"{icon} [{current_index + 1}/{total}]  {bar}  {playhead:.1f}s/{duration:.1f}s"
-                return line
+                t_curr = format_time(playhead)
+                t_total = format_time(duration)
+                
+                return f"{icon} {t_curr} {bar} {t_total}  [{current_index + 1}/{total}]"
             return "Waiting for audio..."
 
         def refresh_ui(paused: bool, playhead: float, duration: float, debug_line: str):
             status_line = build_status_line(paused, playhead, duration)
-            controls_line = "Space Pause  |  ↑↓ Navigate  |  Q/Esc Exit"
-            if paused:
-                controls_line = "Space Resume |  ↑↓ Navigate  |  Q/Esc Exit"
-            screen.draw_header([status_line, controls_line])
-            screen.draw_footer(debug_line or "")
+            footer_text = debug_line if debug_line else "Space: Pause/Resume  |  ↑↓: Navigate  |  Q: Exit"
+            
+            screen.draw_header([status_line])
+            screen.draw_footer(footer_text)
             screen.refresh(pad_top)
 
         while True:
