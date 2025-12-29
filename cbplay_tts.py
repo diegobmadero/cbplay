@@ -376,13 +376,11 @@ class GeminiTTSProvider(TTSProvider):
                 print("No audio data in Gemini response")
                 return None
             
-            # Gemini returns base64-encoded PCM data - decode it
-            if isinstance(audio_data, str):
-                debug_log_file(f"[Gemini TTS] Decoding base64 string (len={len(audio_data)})")
-                pcm_data = base64.b64decode(audio_data)
-            else:
-                debug_log_file(f"[Gemini TTS] Audio data is already bytes (len={len(audio_data)})")
-                pcm_data = audio_data
+            # Gemini ALWAYS returns base64-encoded PCM data (as str or bytes)
+            # Even when type is bytes, it contains ASCII base64 characters, not raw PCM
+            debug_log_file(f"[Gemini TTS] Decoding base64 data (type={type(audio_data).__name__}, len={len(audio_data)})")
+            debug_log_file(f"[Gemini TTS] First 50 bytes: {audio_data[:50] if audio_data else 'None'}")
+            pcm_data = base64.b64decode(audio_data)
             
             debug_log_file(f"[Gemini TTS] PCM data size: {len(pcm_data)} bytes")
             self._write_wav(pcm_data, out_file, sample_rate=24000)
