@@ -60,11 +60,13 @@ class TTSProvider(ABC):
         response_format: str = "mp3",
         instructions: Optional[str] = None,
         cache_dir: Optional[Path] = None,
+        refresh_cache: bool = False,
     ):
         self.voice = voice
         self.model = model
         self.response_format = response_format
         self.instructions = instructions
+        self.refresh_cache = refresh_cache
         self.cache_dir = cache_dir or (Path.home() / ".whisper" / "audio_cache")
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         
@@ -129,7 +131,7 @@ class TTSProvider(ABC):
         if out_file.exists():
             out_file.unlink()
         
-        if text_hash in self.cache_index and cached_file.exists():
+        if not self.refresh_cache and text_hash in self.cache_index and cached_file.exists():
             shutil.copy2(cached_file, out_file)
             return out_file
         
@@ -162,9 +164,10 @@ class OpenAITTSProvider(TTSProvider):
         response_format: str = "mp3",
         instructions: Optional[str] = None,
         timeout: int = 240,
+        refresh_cache: bool = False,
         **kwargs,
     ):
-        super().__init__(voice, model, response_format, instructions, **kwargs)
+        super().__init__(voice, model, response_format, instructions, refresh_cache=refresh_cache, **kwargs)
         self.timeout = timeout
         self.client = OpenAI(timeout=self.timeout)
         self.rate_limiter = RateLimiter(requests_per_minute=50)
@@ -276,6 +279,7 @@ class GeminiTTSProvider(TTSProvider):
         response_format: str = "mp3",
         instructions: Optional[str] = None,
         api_key: Optional[str] = None,
+        refresh_cache: bool = False,
         **kwargs,
     ):
         if not GEMINI_AVAILABLE or genai is None:
@@ -284,7 +288,7 @@ class GeminiTTSProvider(TTSProvider):
                 "Install with: pip install google-genai"
             )
         
-        super().__init__(voice, model, "wav", instructions, **kwargs)
+        super().__init__(voice, model, "wav", instructions, refresh_cache=refresh_cache, **kwargs)
         self.requested_format = response_format
         
         self.api_key = api_key or os.getenv('GEMINI_API_KEY')
@@ -416,6 +420,7 @@ def create_tts_provider(
     model: Optional[str] = None,
     response_format: str = "mp3",
     instructions: Optional[str] = None,
+    refresh_cache: bool = False,
     **kwargs,
 ) -> TTSProvider:
     provider = provider.lower()
@@ -426,6 +431,7 @@ def create_tts_provider(
             model=model or "gpt-4o-mini-tts-2025-12-15",
             response_format=response_format,
             instructions=instructions,
+            refresh_cache=refresh_cache,
             **kwargs,
         )
     elif provider == "gemini":
@@ -434,6 +440,7 @@ def create_tts_provider(
             model=model or "gemini-2.5-flash-preview-tts",
             response_format=response_format,
             instructions=instructions,
+            refresh_cache=refresh_cache,
             **kwargs,
         )
     else:

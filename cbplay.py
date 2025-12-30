@@ -122,6 +122,7 @@ def run_interactive_tts_flow(clipboard_content, combined_texts, args, model, pro
         model=model,
         response_format=response_format,
         instructions=args.instructions,
+        refresh_cache=args.refresh_cache,
     )
     
     audio_queue = queue.Queue()
@@ -182,8 +183,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--instructions', default=DEFAULT_STREAMING_INSTRUCTIONS,
                         help='Delivery instructions for TTS (gpt-4o models only)')
     
-    parser.add_argument('--chunk-size', type=int, default=600,
-                        help='Max chars per chunk (default: 600)')
+    parser.add_argument('--chunk-size', type=int, default=300,
+                        help='Max chars per chunk (default: 300)')
     
     parser.add_argument('--stream', action='store_true',
                         help='Use async streaming playback (disables interactive UI)')
@@ -218,6 +219,9 @@ def build_parser() -> argparse.ArgumentParser:
     
     parser.add_argument('--debug-file', default=None,
                         help='Debug log file path')
+    
+    parser.add_argument('--refresh-cache', action='store_true',
+                        help='Regenerate all audio files, ignoring cache')
     
     parser.add_argument('--list-voices', action='store_true',
                         help='List available voices for the selected provider')
@@ -316,9 +320,9 @@ def main():
     try:
         chunk_size = int(args.chunk_size)
     except Exception:
-        chunk_size = 600
+        chunk_size = 300
     if chunk_size <= 0:
-        chunk_size = 600
+        chunk_size = 300
     
     combined_texts = [prepare_text_for_tts(t) for t in split_text_intelligently(clipboard_content, max_chars=chunk_size)]
     combined_texts = [t for t in combined_texts if t]
