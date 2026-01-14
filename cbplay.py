@@ -140,12 +140,12 @@ def run_interactive_tts_flow(clipboard_content, tts_texts, display_texts, args, 
     # Track which chunks should skip highlighting (structural differences like tables/diagrams)
     # Only skip for major structural differences, not minor formatting like bold markers
     skip_highlight_chunks = set()
-    for i, (tts, disp) in enumerate(zip(tts_texts, display_texts)):
+    for i, (tts_chunk, disp_chunk) in enumerate(zip(tts_texts, display_texts)):
         # Skip highlighting if chunk has diagram placeholder or table conversion
-        if '[Diagram omitted]' in tts or '[Table omitted]' in tts:
+        if '[Diagram omitted]' in tts_chunk or '[Table omitted]' in tts_chunk:
             skip_highlight_chunks.add(i)
         # Skip if table was converted (look for "Header: Value." pattern after "|" in display)
-        elif '|' in disp and ': ' in tts and '|' not in tts:
+        elif '|' in disp_chunk and ': ' in tts_chunk and '|' not in tts_chunk:
             skip_highlight_chunks.add(i)
 
     from cbplay_player_ui import play_audio_files_with_status
