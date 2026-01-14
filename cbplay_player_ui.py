@@ -404,8 +404,8 @@ def _play_ansi_mode(
                     if should_highlight(new_chunk_idx):
                         try:
                             schedule_word_timestamps(current_text_chunk[0], current_text_chunk[1])
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            debug_log_file(f"[ANSI] schedule_word_timestamps exception: {e}")
                     if current_index == -1:
                         current_index = 0
                     else:
@@ -649,8 +649,8 @@ def _play_ansi_mode(
                         if should_highlight(new_chunk_idx):
                             try:
                                 schedule_word_timestamps(new_chunk[0], new_chunk[1])
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                debug_log_file(f"[ANSI] schedule_word_timestamps exception: {e}")
                     except queue.Empty:
                         pass
 
@@ -684,8 +684,8 @@ def _play_ansi_mode(
                         if should_highlight(new_chunk_idx):
                             try:
                                 schedule_word_timestamps(new_chunk[0], new_chunk[1])
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                debug_log_file(f"[ANSI] schedule_word_timestamps exception: {e}")
                         current_index += 1
                     except queue.Empty:
                         pass
@@ -773,31 +773,37 @@ def _play_curses_mode(
 
     def schedule_word_timestamps(audio_path, text):
         debug_log_file(f"[CURSES] schedule_word_timestamps called: audio={audio_path}, text={text[:50] if text else '?'}...")
-        cache_path = word_cache_path_for_text(text)
-        debug_log_file(f"[CURSES] schedule_word_timestamps: cache_path={cache_path}, exists={cache_path.exists()}")
-        if cache_path.exists():
-            existing = load_word_timestamps(cache_path, expected_model=highlight_model)
-            debug_log_file(f"[CURSES] schedule_word_timestamps: existing={existing}")
-            if existing and existing.get("status") == "ok":
-                debug_log_file(f"[CURSES] schedule_word_timestamps: cache hit (ok), returning")
-                return cache_path
-            if existing and existing.get("status") == "error":
-                try:
-                    created_at = float(existing.get("created_at") or 0.0)
-                except Exception:
-                    created_at = 0.0
-                if created_at > 0 and (time.time() - created_at) < 60:
-                    debug_log_file(f"[CURSES] schedule_word_timestamps: recent error, skipping")
+        try:
+            cache_path = word_cache_path_for_text(text)
+            debug_log_file(f"[CURSES] schedule_word_timestamps: cache_path={cache_path}, exists={cache_path.exists()}")
+            if cache_path.exists():
+                existing = load_word_timestamps(cache_path, expected_model=highlight_model)
+                debug_log_file(f"[CURSES] schedule_word_timestamps: existing={existing}")
+                if existing and existing.get("status") == "ok":
+                    debug_log_file(f"[CURSES] schedule_word_timestamps: cache hit (ok), returning")
                     return cache_path
-        key = str(cache_path)
-        with highlight_lock:
-            if key in highlight_inflight:
-                debug_log_file(f"[CURSES] schedule_word_timestamps: already in-flight, skipping")
-                return cache_path
-            highlight_inflight.add(key)
-        highlight_task_queue.put((audio_path, cache_path, key))
-        debug_log_file(f"[CURSES] schedule_word_timestamps: added to queue")
-        return cache_path
+                if existing and existing.get("status") == "error":
+                    try:
+                        created_at = float(existing.get("created_at") or 0.0)
+                    except Exception:
+                        created_at = 0.0
+                    if created_at > 0 and (time.time() - created_at) < 60:
+                        debug_log_file(f"[CURSES] schedule_word_timestamps: recent error, skipping")
+                        return cache_path
+            key = str(cache_path)
+            with highlight_lock:
+                if key in highlight_inflight:
+                    debug_log_file(f"[CURSES] schedule_word_timestamps: already in-flight, skipping")
+                    return cache_path
+                highlight_inflight.add(key)
+            highlight_task_queue.put((audio_path, cache_path, key))
+            debug_log_file(f"[CURSES] schedule_word_timestamps: added to queue")
+            return cache_path
+        except Exception as e:
+            debug_log_file(f"[CURSES] schedule_word_timestamps EXCEPTION: {type(e).__name__}: {e}")
+            import traceback
+            debug_log_file(f"[CURSES] schedule_word_timestamps traceback: {traceback.format_exc()}")
+            raise
 
     def curses_main(stdscr):
         screen = CursesKaraokeScreen(stdscr, debug=ui_debug)
@@ -972,8 +978,8 @@ def _play_curses_mode(
                     if should_highlight(new_chunk_idx):
                         try:
                             schedule_word_timestamps(current_text_chunk[0], current_text_chunk[1])
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            debug_log_file(f"[CURSES] schedule_word_timestamps exception: {e}")
                     if current_index == -1:
                         current_index = 0
                     else:
@@ -1191,8 +1197,8 @@ def _play_curses_mode(
                         if should_highlight(new_chunk_idx):
                             try:
                                 schedule_word_timestamps(new_chunk[0], new_chunk[1])
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                debug_log_file(f"[CURSES] schedule_word_timestamps exception: {e}")
                         needs_full_render = True
                     except queue.Empty:
                         pass
@@ -1224,8 +1230,8 @@ def _play_curses_mode(
                         if should_highlight(new_chunk_idx):
                             try:
                                 schedule_word_timestamps(new_chunk[0], new_chunk[1])
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                debug_log_file(f"[CURSES] schedule_word_timestamps exception: {e}")
                         current_index += 1
                         needs_full_render = True
                     except queue.Empty:

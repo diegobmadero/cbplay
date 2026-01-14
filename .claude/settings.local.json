@@ -3,7 +3,13 @@
     "allow": [
       "Bash(ls:*)",
       "Bash(rm:*)",
-      "Bash(ln:*)"
+      "Bash(ln:*)",
+      "Bash(python3:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(find:*)",
+      "Bash(echo 'No cache in gemini_cache' ls -la ~/.whisper/audio_cache/*.words.json)"
     ],
     "deny": []
   }
