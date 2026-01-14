@@ -442,7 +442,9 @@ def main():
     paired = [(raw, prepare_text_for_tts(raw)) for raw in raw_chunks]
     # Filter out chunks that become empty after processing
     paired = [(raw, tts) for raw, tts in paired if tts]
-    display_texts = [raw for raw, tts in paired]
+    # Strip backticks from display text for alignment with TTS (which doesn't say backticks)
+    from cbplay_utils import strip_backticks
+    display_texts = [strip_backticks(raw) for raw, tts in paired]
     tts_texts = [tts for raw, tts in paired]
 
     if args.full_audio:

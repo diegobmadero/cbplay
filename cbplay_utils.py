@@ -84,6 +84,15 @@ def _strip_code_blocks(text: str) -> str:
     """Remove fenced code blocks (```...```) from text."""
     # Remove fenced code blocks with optional language specifier
     text = re.sub(r'```[a-zA-Z]*\n.*?```', '', text, flags=re.DOTALL)
+    # Also remove orphaned/standalone backticks (from split chunks)
+    text = re.sub(r'^```[a-zA-Z]*\s*', '', text, flags=re.MULTILINE)
+    text = re.sub(r'\s*```\s*$', '', text, flags=re.MULTILINE)
+    return text
+
+
+def strip_backticks(text: str) -> str:
+    """Strip code fence backticks from text (for display alignment with TTS)."""
+    text = re.sub(r'```[a-zA-Z]*', '', text)
     return text
 
 
