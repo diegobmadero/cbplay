@@ -740,10 +740,13 @@ def _play_curses_mode(
     def highlight_worker():
         while True:
             audio_path, cache_path, key = highlight_task_queue.get()
+            debug_log_file(f"[CURSES] highlight_worker got task: audio={audio_path}, cache={cache_path}")
             try:
                 existing = load_word_timestamps(cache_path, expected_model=highlight_model)
                 if existing and existing.get("status") == "ok":
+                    debug_log_file(f"[CURSES] highlight_worker: cache hit (ok), skipping")
                     continue
+                debug_log_file(f"[CURSES] highlight_worker: calling transcribe_audio_words")
                 words = transcribe_audio_words(Path(audio_path), model=highlight_model)
                 debug_log_file(f"[CURSES] highlight_worker got words={len(words) if words else 0}")
                 if words:
@@ -785,9 +788,11 @@ def _play_curses_mode(
         key = str(cache_path)
         with highlight_lock:
             if key in highlight_inflight:
+                debug_log_file(f"[CURSES] schedule_word_timestamps: already in-flight, skipping")
                 return cache_path
             highlight_inflight.add(key)
         highlight_task_queue.put((audio_path, cache_path, key))
+        debug_log_file(f"[CURSES] schedule_word_timestamps: added to queue")
         return cache_path
 
     def curses_main(stdscr):
