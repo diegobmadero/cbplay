@@ -252,6 +252,8 @@ def prepare_text_for_tts(text: str) -> str:
             title += '.'
         return title
     text = re.sub(r'^#{1,6}\s+(.+)$', header_to_sentence, text, flags=re.MULTILINE)
+    # Collapse multiple newlines to single space - TTS skips titles followed by blank lines
+    text = re.sub(r'\n{2,}', ' ', text)
     prepared = clean_text_for_display(text).strip("\r\n")
     # Collapse multiple "[Diagram omitted]" into one
     prepared = re.sub(r'(\[Diagram omitted\]\s*)+', '[Diagram omitted]\n', prepared)
