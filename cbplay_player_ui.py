@@ -774,9 +774,12 @@ def _play_curses_mode(
     def schedule_word_timestamps(audio_path, text):
         debug_log_file(f"[CURSES] schedule_word_timestamps called: audio={audio_path}, text={text[:50] if text else '?'}...")
         cache_path = word_cache_path_for_text(text)
+        debug_log_file(f"[CURSES] schedule_word_timestamps: cache_path={cache_path}, exists={cache_path.exists()}")
         if cache_path.exists():
             existing = load_word_timestamps(cache_path, expected_model=highlight_model)
+            debug_log_file(f"[CURSES] schedule_word_timestamps: existing={existing}")
             if existing and existing.get("status") == "ok":
+                debug_log_file(f"[CURSES] schedule_word_timestamps: cache hit (ok), returning")
                 return cache_path
             if existing and existing.get("status") == "error":
                 try:
@@ -784,6 +787,7 @@ def _play_curses_mode(
                 except Exception:
                     created_at = 0.0
                 if created_at > 0 and (time.time() - created_at) < 60:
+                    debug_log_file(f"[CURSES] schedule_word_timestamps: recent error, skipping")
                     return cache_path
         key = str(cache_path)
         with highlight_lock:
