@@ -260,23 +260,55 @@ def prepare_text_for_tts(text: str) -> str:
     return prepared if prepared.strip() else ""
 
 
+def _is_table_line(line: str) -> bool:
+    """Check if a line is part of a markdown table."""
+    stripped = line.strip()
+    if not stripped:
+        return False
+    # Table rows start and often end with |
+    if stripped.startswith('|'):
+        return True
+    # Table separator line like |---|---|
+    if re.match(r'^[\|\-\:\s]+$', stripped):
+        return True
+    return False
+
+
 def split_text_intelligently(text: str, max_chars: int = 600) -> list:
     chunks = []
     current_chunk = ""
-    
+    in_special_block = False  # True when in table or ASCII art
+
     for line in text.split('\n'):
         line_with_newline = line + '\n'
-        
-        if len(current_chunk) + len(line_with_newline) <= max_chars:
-            current_chunk += line_with_newline
-        else:
-            if current_chunk:
+        is_special = _is_table_line(line) or _is_ascii_art_line(line)
+
+        # Transition: regular -> special (table/art)
+        if is_special and not in_special_block:
+            # Flush current regular chunk before starting special block
+            if current_chunk.strip():
                 chunks.append(current_chunk.rstrip())
             current_chunk = line_with_newline
-    
-    if current_chunk:
+            in_special_block = True
+        # Transition: special -> regular
+        elif not is_special and in_special_block:
+            # Flush current special chunk before starting regular text
+            if current_chunk.strip():
+                chunks.append(current_chunk.rstrip())
+            current_chunk = line_with_newline
+            in_special_block = False
+        # Same block type - check size limit
+        elif len(current_chunk) + len(line_with_newline) <= max_chars:
+            current_chunk += line_with_newline
+        else:
+            # Size limit exceeded - flush and start new chunk
+            if current_chunk.strip():
+                chunks.append(current_chunk.rstrip())
+            current_chunk = line_with_newline
+
+    if current_chunk.strip():
         chunks.append(current_chunk.rstrip())
-    
+
     debug_print(f"Split into {len(chunks)} chunks")
     return chunks
 
