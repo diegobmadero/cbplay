@@ -1024,6 +1024,7 @@ def _play_curses_mode(
             current_dim_span = None
 
             if should_highlight(current_index):
+                debug_log_file(f"[CURSES] chunk {current_index}: highlighting ENABLED")
                 try:
                     words_cache_path = schedule_word_timestamps(audio_file, original_text_chunk)
                     payload = load_word_timestamps(words_cache_path, expected_model=highlight_model)
@@ -1035,8 +1036,11 @@ def _play_curses_mode(
                     else:
                         words_status = "error"
                         words_error = payload.get("error")
-                except Exception:
+                except Exception as e:
+                    debug_log_file(f"[CURSES] chunk {current_index}: highlight setup error: {e}")
                     words_cache_path = None
+            else:
+                debug_log_file(f"[CURSES] chunk {current_index}: highlighting SKIPPED (in skip set)")
 
             if should_highlight(current_index) and words and words_status == "ok":
                 try:

@@ -144,9 +144,12 @@ def run_interactive_tts_flow(clipboard_content, tts_texts, display_texts, args, 
         # Skip highlighting if chunk has diagram placeholder or table conversion
         if '[Diagram omitted]' in tts_chunk or '[Table omitted]' in tts_chunk:
             skip_highlight_chunks.add(i)
+            debug_log_file(f"[MAIN] skip chunk {i}: has diagram/table omitted placeholder")
         # Skip if table was converted (look for "Header: Value." pattern after "|" in display)
         elif '|' in disp_chunk and ': ' in tts_chunk and '|' not in tts_chunk:
             skip_highlight_chunks.add(i)
+            debug_log_file(f"[MAIN] skip chunk {i}: table converted to prose")
+    debug_log_file(f"[MAIN] total chunks={len(tts_texts)}, skip_highlight_chunks={skip_highlight_chunks}")
 
     from cbplay_player_ui import play_audio_files_with_status
     play_audio_files_with_status(
