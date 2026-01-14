@@ -53,11 +53,8 @@ def debug_log_file(message: str):
 def clean_text_for_display(text: str) -> str:
     text = re.sub(r'[├└┌┐┘┤┬┴┼╭╮╯╰╱╲╳]', '', text)
     text = re.sub(r'\*{10,}', '', text)
-    # Strip markdown bold/italic markers
-    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)  # **bold**
-    text = re.sub(r'\*([^*]+)\*', r'\1', text)      # *italic*
-    text = re.sub(r'__([^_]+)__', r'\1', text)      # __bold__
-    text = re.sub(r'_([^_]+)_', r'\1', text)        # _italic_
+    # Keep bold/italic markers - TTS handles them well and keeping them
+    # improves alignment between display text and TTS for word highlighting
     text = re.sub(r'\n{4,}', '\n\n\n', text)
     lines = [line.rstrip() for line in text.split('\n')]
     return '\n'.join(lines)
