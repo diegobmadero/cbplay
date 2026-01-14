@@ -280,6 +280,7 @@ class GeminiTTSProvider(TTSProvider):
         instructions: Optional[str] = None,
         api_key: Optional[str] = None,
         refresh_cache: bool = False,
+        timeout: int = 60,
         **kwargs,
     ):
         if not GEMINI_AVAILABLE or genai is None:
@@ -287,15 +288,19 @@ class GeminiTTSProvider(TTSProvider):
                 "google-genai package not installed. "
                 "Install with: pip install google-genai"
             )
-        
+
         super().__init__(voice, model, "wav", instructions, refresh_cache=refresh_cache, **kwargs)
         self.requested_format = response_format
-        
+        self.timeout = timeout
+
         self.api_key = api_key or os.getenv('GEMINI_API_KEY')
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY is not set")
-        
-        self.client = genai.Client(api_key=self.api_key)
+
+        self.client = genai.Client(
+            api_key=self.api_key,
+            http_options={'timeout': self.timeout * 1000},  # timeout in ms
+        )
         self.rate_limiter = RateLimiter(requests_per_minute=60)
     
     @property

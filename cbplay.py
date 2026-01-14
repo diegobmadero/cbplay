@@ -109,13 +109,13 @@ def graceful_exit(signal_received, frame):
     sys.exit(0)
 
 
-def run_interactive_tts_flow(clipboard_content, combined_texts, args, model, provider):
+def run_interactive_tts_flow(clipboard_content, tts_texts, display_texts, args, model, provider):
     print(f"Processing {len(clipboard_content)} characters...")
-    
+
     response_format = "mp3" if args.highlight else "aac"
     if provider == "gemini":
         response_format = "wav"
-    
+
     tts = create_tts_provider(
         provider=provider,
         voice=args.voice,
@@ -124,19 +124,30 @@ def run_interactive_tts_flow(clipboard_content, combined_texts, args, model, pro
         instructions=args.instructions,
         refresh_cache=args.refresh_cache,
     )
-    
+
     audio_queue = queue.Queue()
     status_queue = queue.Queue()
 
-    print(f"Split into {len(combined_texts)} chunks")
-    
+    print(f"Split into {len(tts_texts)} chunks")
+
     generation_thread = threading.Thread(
         target=generate_audio_files_streaming,
-        args=(combined_texts, tts, audio_queue, status_queue),
+        args=(tts_texts, tts, audio_queue, status_queue),
         daemon=True
     )
     generation_thread.start()
-    
+
+    # Track which chunks should skip highlighting (structural differences like tables/diagrams)
+    # Only skip for major structural differences, not minor formatting like bold markers
+    skip_highlight_chunks = set()
+    for i, (tts, disp) in enumerate(zip(tts_texts, display_texts)):
+        # Skip highlighting if chunk has diagram placeholder or table conversion
+        if '[Diagram omitted]' in tts or '[Table omitted]' in tts:
+            skip_highlight_chunks.add(i)
+        # Skip if table was converted (look for "Header: Value." pattern after "|" in display)
+        elif '|' in disp and ': ' in tts and '|' not in tts:
+            skip_highlight_chunks.add(i)
+
     from cbplay_player_ui import play_audio_files_with_status
     play_audio_files_with_status(
         audio_queue,
@@ -150,7 +161,8 @@ def run_interactive_tts_flow(clipboard_content, combined_texts, args, model, pro
         esc_timeout=args.esc_timeout,
         ui_debug=args.debug,
         ui_mode=args.ui,
-        all_text_chunks=combined_texts,
+        all_text_chunks=display_texts,
+        skip_highlight_chunks=skip_highlight_chunks,
     )
 
 
@@ -225,8 +237,106 @@ def build_parser() -> argparse.ArgumentParser:
     
     parser.add_argument('--list-voices', action='store_true',
                         help='List available voices for the selected provider')
-    
+
+    parser.add_argument('--full-audio', metavar='FILE',
+                        help='Export all audio to a single file (mp3/wav). Reuses cached audio.')
+
     return parser
+
+
+def export_full_audio(combined_texts, args, model, provider, output_path: str):
+    """Generate all audio chunks and concatenate into a single output file."""
+    output_file = Path(output_path)
+    output_ext = output_file.suffix.lower().lstrip('.')
+
+    if output_ext not in ('mp3', 'wav', 'm4a', 'aac'):
+        print(f"Unsupported output format: {output_ext}. Use .mp3, .wav, .m4a, or .aac")
+        return False
+
+    response_format = "wav" if provider == "gemini" else "mp3"
+
+    tts = create_tts_provider(
+        provider=provider,
+        voice=args.voice,
+        model=model,
+        response_format=response_format,
+        instructions=args.instructions,
+        refresh_cache=args.refresh_cache,
+    )
+
+    temp_dir = Path.home() / ".whisper" / "temp"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    total = len(combined_texts)
+    audio_files = []
+
+    cached_set = set()
+    for i, text in enumerate(combined_texts):
+        text_hash = tts._hash_text(text)
+        cached_file = tts.cache_dir / f"{text_hash}.{tts.response_format}"
+        if text_hash in tts.cache_index and cached_file.exists():
+            cached_set.add(i)
+
+    print(f"Exporting {total} chunks to {output_path} ({len(cached_set)} cached)")
+
+    for i, text in enumerate(combined_texts):
+        text_hash = tts._hash_text(text)
+        unique_filename = f"tts_export_{text_hash}.{tts.response_format}"
+        out_file = temp_dir / unique_filename
+
+        result = tts.to_file(text, out_file)
+        if result is None:
+            print(f"Failed to generate audio for chunk {i + 1}")
+            continue
+
+        audio_files.append(str(out_file))
+        status = "cached" if i in cached_set else "generated"
+        print(f"  [{i + 1}/{total}] ({status})")
+
+    if not audio_files:
+        print("No audio files generated.")
+        return False
+
+    list_file = temp_dir / "concat_list.txt"
+    with open(list_file, 'w') as f:
+        for af in audio_files:
+            f.write(f"file '{af}'\n")
+
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    ffmpeg_cmd = [
+        'ffmpeg', '-y', '-f', 'concat', '-safe', '0',
+        '-i', str(list_file),
+    ]
+
+    if output_ext == 'mp3':
+        ffmpeg_cmd.extend(['-c:a', 'libmp3lame', '-q:a', '2'])
+    elif output_ext == 'wav':
+        ffmpeg_cmd.extend(['-c:a', 'pcm_s16le'])
+    elif output_ext in ('m4a', 'aac'):
+        ffmpeg_cmd.extend(['-c:a', 'aac', '-b:a', '192k'])
+
+    ffmpeg_cmd.append(str(output_file))
+
+    try:
+        result = subprocess.run(
+            ffmpeg_cmd,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            print(f"ffmpeg error: {result.stderr}")
+            return False
+    except FileNotFoundError:
+        print("Error: ffmpeg not found. Please install ffmpeg.")
+        return False
+
+    list_file.unlink(missing_ok=True)
+    for af in audio_files:
+        Path(af).unlink(missing_ok=True)
+
+    print(f"Audio exported to: {output_file}")
+    return True
 
 
 def main():
@@ -324,24 +434,34 @@ def main():
     if chunk_size <= 0:
         chunk_size = 300
     
-    combined_texts = [prepare_text_for_tts(t) for t in split_text_intelligently(clipboard_content, max_chars=chunk_size)]
-    combined_texts = [t for t in combined_texts if t]
-    
+    # Split text and create parallel lists: raw for display, processed for TTS
+    raw_chunks = split_text_intelligently(clipboard_content, max_chars=chunk_size)
+    paired = [(raw, prepare_text_for_tts(raw)) for raw in raw_chunks]
+    # Filter out chunks that become empty after processing
+    paired = [(raw, tts) for raw, tts in paired if tts]
+    display_texts = [raw for raw, tts in paired]
+    tts_texts = [tts for raw, tts in paired]
+
+    if args.full_audio:
+        tts_model = args.model
+        export_full_audio(tts_texts, args, tts_model, args.provider, args.full_audio)
+        return
+
     if not args.stream:
         tts_model = args.highlight_tts_model if args.highlight else args.model
-        run_interactive_tts_flow(clipboard_content, combined_texts, args, tts_model, args.provider)
+        run_interactive_tts_flow(clipboard_content, tts_texts, display_texts, args, tts_model, args.provider)
         return
-    
+
     if args.provider == "gemini":
         print("Streaming mode not yet supported for Gemini. Using interactive mode.")
         tts_model = args.highlight_tts_model if args.highlight else args.model
-        run_interactive_tts_flow(clipboard_content, combined_texts, args, tts_model, args.provider)
+        run_interactive_tts_flow(clipboard_content, tts_texts, display_texts, args, tts_model, args.provider)
         return
-    
+
     try:
-        print(f"Streaming {len(combined_texts)} chunk(s) with {args.model}/{args.voice}...")
+        print(f"Streaming {len(tts_texts)} chunk(s) with {args.model}/{args.voice}...")
         asyncio.run(stream_tts_chunks(
-            combined_texts=combined_texts,
+            combined_texts=tts_texts,
             voice=args.voice,
             model=args.model,
             instructions=args.instructions,
@@ -350,7 +470,7 @@ def main():
         ))
     except Exception as e:
         print(f"Streaming path failed ({e}). Falling back to interactive UI...")
-        run_interactive_tts_flow(clipboard_content, combined_texts, args, args.model, args.provider)
+        run_interactive_tts_flow(clipboard_content, tts_texts, display_texts, args, args.model, args.provider)
 
 
 if __name__ == "__main__":

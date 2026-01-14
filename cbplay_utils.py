@@ -53,15 +53,202 @@ def debug_log_file(message: str):
 def clean_text_for_display(text: str) -> str:
     text = re.sub(r'[├└┌┐┘┤┬┴┼╭╮╯╰╱╲╳]', '', text)
     text = re.sub(r'\*{10,}', '', text)
+    # Strip markdown bold/italic markers
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)  # **bold**
+    text = re.sub(r'\*([^*]+)\*', r'\1', text)      # *italic*
+    text = re.sub(r'__([^_]+)__', r'\1', text)      # __bold__
+    text = re.sub(r'_([^_]+)_', r'\1', text)        # _italic_
     text = re.sub(r'\n{4,}', '\n\n\n', text)
     lines = [line.rstrip() for line in text.split('\n')]
     return '\n'.join(lines)
 
 
+# Box drawing and other characters that indicate ASCII art
+_BOX_DRAWING_CHARS = set('│─┌┐└┘├┤┬┴┼╭╮╯╰═║╔╗╚╝╠╣╦╩╬')
+_ASCII_ART_CHARS = _BOX_DRAWING_CHARS | set('●○◄►▲▼◀▶■□▪▫')
+
+
+def _is_ascii_art_line(line: str) -> bool:
+    """Check if a line is likely ASCII art."""
+    if not line.strip():
+        return False
+    stripped = line.strip()
+
+    # Line starts/ends with box drawing (framed content)
+    if stripped[0] in _BOX_DRAWING_CHARS or stripped[-1] in _BOX_DRAWING_CHARS:
+        return True
+
+    # Line is mostly box drawing (horizontal rules, etc)
+    art_chars = sum(1 for c in stripped if c in _ASCII_ART_CHARS)
+    if art_chars / len(stripped) > 0.3:
+        return True
+
+    return False
+
+
+def _strip_code_blocks(text: str) -> str:
+    """Remove fenced code blocks (```...```) from text."""
+    # Remove fenced code blocks with optional language specifier
+    text = re.sub(r'```[a-zA-Z]*\n.*?```', '', text, flags=re.DOTALL)
+    return text
+
+
+def _is_table_line(line: str) -> bool:
+    """Check if line is part of a markdown table."""
+    stripped = line.strip()
+    if not stripped:
+        return False
+    # Table lines start and end with |
+    if stripped.startswith('|') and stripped.endswith('|'):
+        return True
+    # Separator line like |---|---|
+    if re.match(r'^\|[\s\-:]+\|', stripped):
+        return True
+    return False
+
+
+def _is_separator_line(line: str) -> bool:
+    """Check if line is a table separator (|---|---|)."""
+    stripped = line.strip()
+    return bool(re.match(r'^\|[\s\-:|]+\|$', stripped) and '-' in stripped)
+
+
+def _parse_table_row(line: str) -> list:
+    """Parse a table row into cells."""
+    stripped = line.strip()
+    if stripped.startswith('|'):
+        stripped = stripped[1:]
+    if stripped.endswith('|'):
+        stripped = stripped[:-1]
+    return [cell.strip() for cell in stripped.split('|')]
+
+
+def _convert_table_to_prose(table_lines: list) -> str:
+    """Convert a markdown table to readable prose."""
+    if len(table_lines) < 2:
+        return ''
+
+    # Find header and data rows
+    header_line = None
+    data_rows = []
+
+    for i, line in enumerate(table_lines):
+        if _is_separator_line(line):
+            # Header is the line before separator
+            if i > 0:
+                header_line = table_lines[i - 1]
+            continue
+        if header_line is None and not _is_separator_line(line):
+            # Before finding separator, this could be header
+            continue
+        if header_line is not None and not _is_separator_line(line):
+            data_rows.append(line)
+
+    # If no separator found, first line is header
+    if header_line is None and table_lines:
+        header_line = table_lines[0]
+        data_rows = table_lines[1:]
+
+    if not header_line:
+        return '[Table omitted]'
+
+    headers = _parse_table_row(header_line)
+    headers = [h for h in headers if h]  # Remove empty
+
+    if not headers:
+        return '[Table omitted]'
+
+    result_parts = []
+
+    for row_line in data_rows:
+        if _is_separator_line(row_line):
+            continue
+        cells = _parse_table_row(row_line)
+        row_desc = []
+        for i, cell in enumerate(cells):
+            if i < len(headers) and cell:
+                row_desc.append(f"{headers[i]}: {cell}")
+        if row_desc:
+            result_parts.append('. '.join(row_desc) + '.')
+
+    if result_parts:
+        return '\n'.join(result_parts)
+    return '[Table omitted]'
+
+
+def _convert_tables_to_prose(text: str) -> str:
+    """Find and convert markdown tables to prose."""
+    lines = text.split('\n')
+    result = []
+    table_buffer = []
+    in_table = False
+
+    for line in lines:
+        is_table = _is_table_line(line)
+
+        if is_table:
+            in_table = True
+            table_buffer.append(line)
+        else:
+            if in_table and table_buffer:
+                # End of table, convert it
+                prose = _convert_table_to_prose(table_buffer)
+                if prose:
+                    result.append(prose)
+                table_buffer = []
+            in_table = False
+            result.append(line)
+
+    # Handle table at end of text
+    if table_buffer:
+        prose = _convert_table_to_prose(table_buffer)
+        if prose:
+            result.append(prose)
+
+    return '\n'.join(result)
+
+
+def _strip_ascii_art(text: str) -> str:
+    """Remove ASCII art blocks from text."""
+    lines = text.split('\n')
+    result = []
+    in_art_block = False
+    art_block_count = 0
+
+    for line in lines:
+        is_art = _is_ascii_art_line(line)
+
+        if is_art:
+            art_block_count += 1
+            # Start of art block (2+ consecutive art lines)
+            if art_block_count >= 2:
+                in_art_block = True
+        else:
+            if in_art_block:
+                # Just exited an art block, add a note
+                result.append('[Diagram omitted]')
+            in_art_block = False
+            art_block_count = 0
+            result.append(line)
+
+    # Handle trailing art block
+    if in_art_block:
+        result.append('[Diagram omitted]')
+
+    return '\n'.join(result)
+
+
 def prepare_text_for_tts(text: str) -> str:
     if text is None:
         return ""
-    prepared = clean_text_for_display(str(text)).strip("\r\n")
+    text = str(text)
+    # Strip code blocks, convert tables, remove ASCII art
+    text = _strip_code_blocks(text)
+    text = _convert_tables_to_prose(text)
+    text = _strip_ascii_art(text)
+    prepared = clean_text_for_display(text).strip("\r\n")
+    # Collapse multiple "[Diagram omitted]" into one
+    prepared = re.sub(r'(\[Diagram omitted\]\s*)+', '[Diagram omitted]\n', prepared)
     return prepared if prepared.strip() else ""
 
 

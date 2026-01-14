@@ -42,6 +42,7 @@ def play_audio_files_with_status(
     ui_debug: bool = False,
     ui_mode: str = "ansi",
     all_text_chunks: Optional[List[str]] = None,
+    skip_highlight_chunks: Optional[set] = None,
 ):
     if not sys.stdin.isatty() or os.getenv('NOTTY') == '1':
         print("Not running in a terminal, audio generation only mode")
@@ -54,7 +55,7 @@ def play_audio_files_with_status(
                     debug_print(f"Received chunk {total_received} from queue")
                 except queue.Empty:
                     break
-            
+
             if not status_queue.empty():
                 status = status_queue.get()
                 if status[0] == "cached":
@@ -71,7 +72,7 @@ def play_audio_files_with_status(
                     break
             time.sleep(0.1)
         return
-    
+
     if ui_mode == "curses":
         return _play_curses_mode(
             audio_queue, status_queue, tts,
@@ -79,14 +80,16 @@ def play_audio_files_with_status(
             highlight_window=highlight_window, resume_rewind=resume_rewind,
             playhead_lag=playhead_lag, ui_debug=ui_debug,
             all_text_chunks=all_text_chunks,
+            skip_highlight_chunks=skip_highlight_chunks,
         )
-    
+
     return _play_ansi_mode(
         audio_queue, status_queue, tts,
         highlight=highlight, highlight_model=highlight_model,
         highlight_window=highlight_window, resume_rewind=resume_rewind,
         playhead_lag=playhead_lag, esc_timeout=esc_timeout,
         ui_debug=ui_debug, all_text_chunks=all_text_chunks,
+        skip_highlight_chunks=skip_highlight_chunks,
     )
 
 
@@ -102,6 +105,7 @@ def _play_ansi_mode(
     esc_timeout: Optional[float],
     ui_debug: bool,
     all_text_chunks: Optional[List[str]],
+    skip_highlight_chunks: Optional[set] = None,
 ):
     old_settings = termios.tcgetattr(sys.stdin)
     try:
@@ -119,7 +123,11 @@ def _play_ansi_mode(
         use_ffplay = ffplay_available()
         rewind_padding = max(0.0, float(resume_rewind or 0.0))
         highlight_enabled = bool(highlight)
-        debug_log_file(f"[ANSI] highlight_enabled={highlight_enabled}, highlight_model={highlight_model}")
+        skip_chunks = skip_highlight_chunks or set()
+        debug_log_file(f"[ANSI] highlight_enabled={highlight_enabled}, highlight_model={highlight_model}, skip_chunks={len(skip_chunks)}")
+
+        def should_highlight(idx):
+            return highlight_enabled and idx not in skip_chunks
         ui_debug = bool(ui_debug)
         try:
             highlight_context_words = max(0, int(highlight_window or 0))
@@ -392,7 +400,8 @@ def _play_ansi_mode(
                 try:
                     current_text_chunk = audio_queue.get_nowait()
                     history.append(current_text_chunk)
-                    if highlight_enabled:
+                    new_chunk_idx = len(history) - 1
+                    if should_highlight(new_chunk_idx):
                         try:
                             schedule_word_timestamps(current_text_chunk[0], current_text_chunk[1])
                         except Exception:
@@ -443,7 +452,7 @@ def _play_ansi_mode(
                 region_line_count = 0
                 last_debug_line = None
 
-                if highlight_enabled:
+                if should_highlight(current_index):
                     try:
                         words_cache_path = schedule_word_timestamps(audio_file, original_text_chunk)
                         payload = load_word_timestamps(words_cache_path, expected_model=highlight_model)
@@ -458,18 +467,22 @@ def _play_ansi_mode(
                     except Exception:
                         words_cache_path = None
 
-                if words and words_status == "ok":
+                if should_highlight(current_index) and words and words_status == "ok":
                     try:
                         if float(words[0].get("start", 0.0)) <= 0.05:
                             current_word_index = 0
                     except Exception:
                         pass
-                    tokens = extract_text_tokens(cleaned_text)
+                    # Use display text for token extraction so spans match displayed content
+                    display_text = all_text_chunks[current_index] if all_text_chunks and current_index < len(all_text_chunks) else cleaned_text
+                    tokens = extract_text_tokens(display_text)
                     word_to_token = align_words_to_text(words, tokens)
 
+                # Use display text for rendering if available
+                render_text = all_text_chunks[current_index] if all_text_chunks and current_index < len(all_text_chunks) else cleaned_text
                 last_debug_line = highlight_debug_info(audio_file, words_cache_path, words_status, words_error)
                 region_lines = renderer.render_current_region(
-                    cleaned_text,
+                    render_text,
                     highlight_spans=build_highlight_spans(current_highlight_span, current_highlight_word_span, current_dim_span),
                     paused=False, debug_line=last_debug_line,
                     chunk_index=current_index, total_chunks=effective_total,
@@ -563,7 +576,7 @@ def _play_ansi_mode(
                     time.sleep(0.1)
                     continue
 
-                if highlight_enabled and words_cache_path is not None and words_status != "ok":
+                if should_highlight(current_index) and words_cache_path is not None and words_status != "ok":
                     payload = load_word_timestamps(words_cache_path, expected_model=highlight_model)
                     if payload is None:
                         words_status = "preparing"
@@ -572,13 +585,15 @@ def _play_ansi_mode(
                         words_error = None
                         words = payload.get("words") or None
                         current_word_index = -1
-                        tokens = extract_text_tokens(cleaned_text)
+                        # Use display text for token extraction so spans match displayed content
+                        display_text = all_text_chunks[current_index] if all_text_chunks and current_index < len(all_text_chunks) else cleaned_text
+                        tokens = extract_text_tokens(display_text)
                         word_to_token = align_words_to_text(words, tokens)
                     else:
                         words_status = "error"
                         words_error = payload.get("error")
 
-                if highlight_enabled:
+                if should_highlight(current_index):
                     playhead = max(0.0, playback_offset + (time.monotonic() - playback_started_at) - playback_lag)
 
                 if words:
@@ -630,7 +645,8 @@ def _play_ansi_mode(
                     try:
                         new_chunk = audio_queue.get_nowait()
                         history.append(new_chunk)
-                        if highlight_enabled:
+                        new_chunk_idx = len(history) - 1
+                        if should_highlight(new_chunk_idx):
                             try:
                                 schedule_word_timestamps(new_chunk[0], new_chunk[1])
                             except Exception:
@@ -639,7 +655,7 @@ def _play_ansi_mode(
                         pass
 
                 time.sleep(0.01)
-                
+
             if not user_interrupted:
                 is_at_last_chunk = (current_index == len(history) - 1 and audio_queue.empty() and generation_done)
                 if is_at_last_chunk:
@@ -664,7 +680,8 @@ def _play_ansi_mode(
                     try:
                         new_chunk = audio_queue.get_nowait()
                         history.append(new_chunk)
-                        if highlight_enabled:
+                        new_chunk_idx = len(history) - 1
+                        if should_highlight(new_chunk_idx):
                             try:
                                 schedule_word_timestamps(new_chunk[0], new_chunk[1])
                             except Exception:
@@ -687,13 +704,18 @@ def _play_curses_mode(
     playhead_lag: Optional[float],
     ui_debug: bool,
     all_text_chunks: Optional[List[str]],
+    skip_highlight_chunks: Optional[set] = None,
 ):
     from cbplay_ui_curses import CursesKaraokeScreen
-    
+
     use_ffplay = ffplay_available()
     rewind_padding = max(0.0, float(resume_rewind or 0.0))
     highlight_enabled = bool(highlight)
-    debug_log_file(f"[CURSES] highlight_enabled={highlight_enabled}, highlight_model={highlight_model}")
+    skip_chunks = skip_highlight_chunks or set()
+    debug_log_file(f"[CURSES] highlight_enabled={highlight_enabled}, highlight_model={highlight_model}, skip_chunks={len(skip_chunks)}")
+
+    def should_highlight(idx):
+        return highlight_enabled and idx not in skip_chunks
     
     try:
         highlight_context_words = max(0, int(highlight_window or 0))
@@ -937,7 +959,8 @@ def _play_curses_mode(
                 try:
                     current_text_chunk = audio_queue.get_nowait()
                     history.append(current_text_chunk)
-                    if highlight_enabled:
+                    new_chunk_idx = len(history) - 1
+                    if should_highlight(new_chunk_idx):
                         try:
                             schedule_word_timestamps(current_text_chunk[0], current_text_chunk[1])
                         except Exception:
@@ -985,7 +1008,7 @@ def _play_curses_mode(
             current_highlight_word_span = None
             current_dim_span = None
 
-            if highlight_enabled:
+            if should_highlight(current_index):
                 try:
                     words_cache_path = schedule_word_timestamps(audio_file, original_text_chunk)
                     payload = load_word_timestamps(words_cache_path, expected_model=highlight_model)
@@ -1000,13 +1023,15 @@ def _play_curses_mode(
                 except Exception:
                     words_cache_path = None
 
-            if words and words_status == "ok":
+            if should_highlight(current_index) and words and words_status == "ok":
                 try:
                     if float(words[0].get("start", 0.0)) <= 0.05:
                         current_word_index = 0
                 except Exception:
                     pass
-                tokens = extract_text_tokens(cleaned_text)
+                # Use display text for token extraction so spans match displayed content
+                display_text = all_text_chunks[current_index] if all_text_chunks and current_index < len(all_text_chunks) else cleaned_text
+                tokens = extract_text_tokens(display_text)
                 word_to_token = align_words_to_text(words, tokens)
 
             apply_highlights(current_dim_span, current_highlight_span, current_highlight_word_span)
@@ -1090,7 +1115,7 @@ def _play_curses_mode(
                     time.sleep(0.05)
                     continue
 
-                if highlight_enabled and words_cache_path is not None and words_status != "ok":
+                if should_highlight(current_index) and words_cache_path is not None and words_status != "ok":
                     payload = load_word_timestamps(words_cache_path, expected_model=highlight_model)
                     if payload is None:
                         words_status = "preparing"
@@ -1100,14 +1125,16 @@ def _play_curses_mode(
                         words = payload.get("words") or None
                         debug_log_file(f"[CURSES] words_status changed to OK, words={len(words) if words else 0}")
                         current_word_index = -1
-                        tokens = extract_text_tokens(cleaned_text)
+                        # Use display text for token extraction so spans match displayed content
+                        display_text = all_text_chunks[current_index] if all_text_chunks and current_index < len(all_text_chunks) else cleaned_text
+                        tokens = extract_text_tokens(display_text)
                         word_to_token = align_words_to_text(words, tokens)
                     else:
                         words_status = "error"
                         words_error = payload.get("error")
                         debug_log_file(f"[CURSES] words_status changed to ERROR: {words_error}")
 
-                if highlight_enabled:
+                if should_highlight(current_index):
                     playhead = max(0.0, playback_offset + (time.monotonic() - playback_started_at) - playback_lag)
 
                 if words:
@@ -1151,7 +1178,8 @@ def _play_curses_mode(
                     try:
                         new_chunk = audio_queue.get_nowait()
                         history.append(new_chunk)
-                        if highlight_enabled:
+                        new_chunk_idx = len(history) - 1
+                        if should_highlight(new_chunk_idx):
                             try:
                                 schedule_word_timestamps(new_chunk[0], new_chunk[1])
                             except Exception:
@@ -1183,7 +1211,8 @@ def _play_curses_mode(
                     try:
                         new_chunk = audio_queue.get_nowait()
                         history.append(new_chunk)
-                        if highlight_enabled:
+                        new_chunk_idx = len(history) - 1
+                        if should_highlight(new_chunk_idx):
                             try:
                                 schedule_word_timestamps(new_chunk[0], new_chunk[1])
                             except Exception:
