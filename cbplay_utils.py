@@ -243,9 +243,15 @@ def prepare_text_for_tts(text: str) -> str:
     text = _strip_code_blocks(text)
     text = _convert_tables_to_prose(text)
     text = _strip_ascii_art(text)
-    # Convert markdown headers to plain text (TTS may skip lines starting with #)
-    # e.g., "# Title" -> "Title", "## Subtitle" -> "Subtitle"
-    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    # Convert markdown headers to sentences (TTS may skip standalone title lines)
+    # e.g., "# Title" -> "Title." - adding period makes TTS read it as content
+    def header_to_sentence(match):
+        title = match.group(1).strip()
+        # Add period if doesn't end with punctuation
+        if title and title[-1] not in '.!?:;':
+            title += '.'
+        return title
+    text = re.sub(r'^#{1,6}\s+(.+)$', header_to_sentence, text, flags=re.MULTILINE)
     prepared = clean_text_for_display(text).strip("\r\n")
     # Collapse multiple "[Diagram omitted]" into one
     prepared = re.sub(r'(\[Diagram omitted\]\s*)+', '[Diagram omitted]\n', prepared)
