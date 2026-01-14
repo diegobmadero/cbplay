@@ -13,13 +13,10 @@ DEBUG_FILE = None
 _AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".webm", ".opus"}
 
 DEFAULT_STREAMING_INSTRUCTIONS = """
-Accent/Affect: Warm, refined, and gently instructive, reminiscent of a friendly engaging, fun instructor.
-Tone: Calm, encouraging, engaging, fun, and articulate, clearly describing each step with patience.
-Pacing: Slow and deliberate, pausing often to allow the listener to follow instructions comfortably. Pause between paragraphs to allow the reader to digest the info.
-Emotion: Cheerful, supportive, and pleasantly enthusiastic; convey genuine enjoyment and appreciation of art.
-Pronunciation: Clearly articulate artistic terminology (e.g., "brushstrokes," "landscape," "palette") with gentle emphasis.
-Personality Affect: Friendly and approachable with a hint of sophistication; speak confidently and reassuringly, guiding users through each painting step patiently and warmly.
-Notes: If you see markdown-like formatting, mostly ignore it, (e.g. "#Title", don't say "hash title", say "Title").
+Tone: Clear, engaging, and informative. Read the text naturally as if explaining to a colleague.
+Pacing: Moderate pace with natural pauses between sentences and paragraphs.
+Style: Professional but approachable. Pronounce technical terms clearly.
+Notes: Read all text content faithfully. Do not add, embellish, or improvise content beyond what is provided.
 """
 
 
@@ -257,6 +254,11 @@ def prepare_text_for_tts(text: str) -> str:
     prepared = clean_text_for_display(text).strip("\r\n")
     # Collapse multiple "[Diagram omitted]" into one
     prepared = re.sub(r'(\[Diagram omitted\]\s*)+', '[Diagram omitted]\n', prepared)
+    # Filter out very short chunks to prevent TTS hallucination
+    # Must have at least 10 chars of actual words (not just punctuation/symbols)
+    words_only = re.sub(r'[^a-zA-Z0-9\s]', '', prepared)
+    if len(words_only.strip()) < 10:
+        return ""
     return prepared if prepared.strip() else ""
 
 
