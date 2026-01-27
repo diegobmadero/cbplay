@@ -90,10 +90,20 @@ def _strip_code_blocks(text: str) -> str:
     return text
 
 
-def strip_backticks(text: str) -> str:
-    """Strip code fence backticks from text (for display alignment with TTS)."""
+def strip_markdown_for_display(text: str) -> str:
+    """Strip markdown syntax from display text for alignment with TTS.
+
+    TTS processing strips headers, backticks etc. We need display text to match.
+    """
+    # Strip code fence backticks
     text = re.sub(r'```[a-zA-Z]*', '', text)
+    # Strip markdown header markers (### Title -> Title)
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
     return text
+
+
+# Keep old name as alias for compatibility
+strip_backticks = strip_markdown_for_display
 
 
 def _is_table_line(line: str) -> bool:
@@ -127,7 +137,7 @@ def _parse_table_row(line: str) -> list:
 
 
 def _convert_table_to_prose(table_lines: list) -> str:
-    """Convert a markdown table to readable prose."""
+    """Convert a markdown table to readable prose, grouped by column."""
     if len(table_lines) < 2:
         return ''
 
@@ -161,18 +171,26 @@ def _convert_table_to_prose(table_lines: list) -> str:
     if not headers:
         return '[Table omitted]'
 
+    # Build prose row by row (natural reading order)
     result_parts = []
 
     for row_line in data_rows:
         if _is_separator_line(row_line):
             continue
         cells = _parse_table_row(row_line)
-        row_desc = []
-        for i, cell in enumerate(cells):
-            if i < len(headers) and cell:
-                row_desc.append(f"{headers[i]}: {cell}")
-        if row_desc:
-            result_parts.append('. '.join(row_desc) + '.')
+        cells = [c for c in cells if c]  # Remove empty cells
+
+        if not cells:
+            continue
+
+        if len(cells) == 2:
+            # Two columns: "label: description" format (natural reading)
+            result_parts.append(f"{cells[0]}: {cells[1]}")
+        elif len(cells) == 1:
+            result_parts.append(cells[0])
+        else:
+            # 3+ columns: join with commas
+            result_parts.append(', '.join(cells))
 
     if result_parts:
         return '\n'.join(result_parts)

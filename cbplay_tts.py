@@ -20,13 +20,14 @@ from cbplay_utils import debug_log_file
 
 try:
     from google import genai
+
     GEMINI_AVAILABLE = True
 except ImportError:
     genai = None
     GEMINI_AVAILABLE = False
 
 
-AudioFormat = Literal['mp3', 'opus', 'aac', 'flac', 'wav', 'pcm']
+AudioFormat = Literal["mp3", "opus", "aac", "flac", "wav", "pcm"]
 
 
 class RateLimiter:
@@ -34,25 +35,29 @@ class RateLimiter:
         self.requests_per_minute = requests_per_minute
         self.request_times: List[datetime] = []
         self.lock = threading.Lock()
-    
+
     def wait_if_needed(self):
         with self.lock:
             now = datetime.now()
-            self.request_times = [t for t in self.request_times if now - t < timedelta(minutes=1)]
-            
+            self.request_times = [
+                t for t in self.request_times if now - t < timedelta(minutes=1)
+            ]
+
             if len(self.request_times) >= self.requests_per_minute:
                 oldest_request = self.request_times[0]
-                wait_time = (oldest_request + timedelta(minutes=1) - now).total_seconds()
+                wait_time = (
+                    oldest_request + timedelta(minutes=1) - now
+                ).total_seconds()
                 if wait_time > 0:
                     time.sleep(wait_time)
                     return self.wait_if_needed()
-            
+
             self.request_times.append(now)
 
 
 class TTSProvider(ABC):
     """Abstract base class for TTS providers."""
-    
+
     def __init__(
         self,
         voice: str,
@@ -69,91 +74,113 @@ class TTSProvider(ABC):
         self.refresh_cache = refresh_cache
         self.cache_dir = cache_dir or (Path.home() / ".whisper" / "audio_cache")
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        
+
         self.cache_index_file = self.cache_dir / "cache_index.json"
         self.cache_index = self._load_cache_index()
         self._clean_cache()
-    
+
     def _load_cache_index(self) -> dict:
         if self.cache_index_file.exists():
             try:
-                with open(self.cache_index_file, 'r') as f:
+                with open(self.cache_index_file, "r") as f:
                     return json.load(f)
             except Exception:
                 return {}
         return {}
-    
+
     def _save_cache_index(self):
-        with open(self.cache_index_file, 'w') as f:
+        with open(self.cache_index_file, "w") as f:
             json.dump(self.cache_index, f)
-    
+
     def _clean_cache(self, max_age_days: int = 7):
         now = time.time()
         to_remove = []
-        
+
         for hash_key, data in self.cache_index.items():
-            if now - data.get('timestamp', 0) > max_age_days * 86400:
+            if now - data.get("timestamp", 0) > max_age_days * 86400:
                 cached_file = self.cache_dir / f"{hash_key}.{self.response_format}"
                 if cached_file.exists():
                     cached_file.unlink()
                 to_remove.append(hash_key)
-        
+
         for key in to_remove:
             del self.cache_index[key]
-        
+
         if to_remove:
             self._save_cache_index()
-    
+
     def _hash_text(self, text: str) -> str:
-        content = "\n".join([
-            f"provider:{self.provider_name}",
-            f"model:{self.model}",
-            f"voice:{self.voice}",
-            f"format:{self.response_format}",
-            f"instructions:{self.instructions or ''}",
-            f"text:{text}",
-        ])
+        content = "\n".join(
+            [
+                f"provider:{self.provider_name}",
+                f"model:{self.model}",
+                f"voice:{self.voice}",
+                f"format:{self.response_format}",
+                f"instructions:{self.instructions or ''}",
+                f"text:{text}",
+            ]
+        )
         return hashlib.sha256(content.encode()).hexdigest()
-    
+
     @property
     @abstractmethod
     def provider_name(self) -> str:
         pass
-    
+
     @abstractmethod
     def _generate_audio(self, text: str, out_file: Path) -> Optional[Path]:
         pass
-    
+
     def to_file(self, text: str, out_file: Path) -> Optional[Path]:
         text_hash = self._hash_text(text)
         cached_file = self.cache_dir / f"{text_hash}.{self.response_format}"
-        
+
         if out_file.exists():
             out_file.unlink()
-        
-        if not self.refresh_cache and text_hash in self.cache_index and cached_file.exists():
+
+        if (
+            not self.refresh_cache
+            and text_hash in self.cache_index
+            and cached_file.exists()
+        ):
             shutil.copy2(cached_file, out_file)
             return out_file
-        
+
         result = self._generate_audio(text, out_file)
-        
+
         if result is not None and out_file.exists():
             shutil.copy2(out_file, cached_file)
             self.cache_index[text_hash] = {
-                'timestamp': time.time(),
-                'text_preview': text[:50],
-                'voice': self.voice,
-                'provider': self.provider_name,
+                "timestamp": time.time(),
+                "text_preview": text[:50],
+                "voice": self.voice,
+                "provider": self.provider_name,
             }
             self._save_cache_index()
-        
+
         return result
 
 
-OPENAI_VOICES = ['alloy', 'ash', 'ballad', 'coral', 'echo', 'fable', 
-                 'nova', 'onyx', 'sage', 'shimmer', 'verse']
+OPENAI_VOICES = [
+    "alloy",
+    "ash",
+    "ballad",
+    "coral",
+    "echo",
+    "fable",
+    "nova",
+    "onyx",
+    "sage",
+    "shimmer",
+    "verse",
+]
 
-OPENAI_MODELS = ['tts-1', 'tts-1-hd', 'gpt-4o-mini-tts-2025-12-15', 'gpt-4o-audio-preview']
+OPENAI_MODELS = [
+    "tts-1",
+    "tts-1-hd",
+    "gpt-4o-mini-tts-2025-12-15",
+    "gpt-4o-audio-preview",
+]
 
 
 class OpenAITTSProvider(TTSProvider):
@@ -167,15 +194,22 @@ class OpenAITTSProvider(TTSProvider):
         refresh_cache: bool = False,
         **kwargs,
     ):
-        super().__init__(voice, model, response_format, instructions, refresh_cache=refresh_cache, **kwargs)
+        super().__init__(
+            voice,
+            model,
+            response_format,
+            instructions,
+            refresh_cache=refresh_cache,
+            **kwargs,
+        )
         self.timeout = timeout
         self.client = OpenAI(timeout=self.timeout)
         self.rate_limiter = RateLimiter(requests_per_minute=50)
-    
+
     @property
     def provider_name(self) -> str:
         return "openai"
-    
+
     def _effective_instructions(self) -> Optional[str]:
         instructions = (self.instructions or "").strip()
         if not instructions:
@@ -183,31 +217,37 @@ class OpenAITTSProvider(TTSProvider):
         if self.model.startswith("gpt-4o"):
             return instructions
         return None
-    
+
     def _generate_audio(self, text: str, out_file: Path) -> Optional[Path]:
         raw_text = "" if text is None else str(text)
         if not raw_text.strip():
             return None
-        
-        debug_log_file(f"[OpenAI TTS] Starting generation for text: {raw_text[:100]}...")
+
+        debug_log_file(
+            f"[OpenAI TTS] Starting generation for text: {raw_text[:100]}..."
+        )
         debug_log_file(f"[OpenAI TTS] Model: {self.model}, Voice: {self.voice}")
-        
+
         audio_format: AudioFormat = "mp3"
-        if self.response_format in ('mp3', 'opus', 'aac', 'flac', 'wav', 'pcm'):
+        if self.response_format in ("mp3", "opus", "aac", "flac", "wav", "pcm"):
             audio_format = self.response_format  # type: ignore
-        
+
         instructions = self._effective_instructions()
-        debug_log_file(f"[OpenAI TTS] Format: {audio_format}, Instructions: {bool(instructions)}")
-        
+        debug_log_file(
+            f"[OpenAI TTS] Format: {audio_format}, Instructions: {bool(instructions)}"
+        )
+
         self.rate_limiter.wait_if_needed()
-        
+
         retry_count = 0
         max_retries = 3
         response = None
-        
+
         while retry_count < max_retries:
             try:
-                debug_log_file(f"[OpenAI TTS] API call attempt {retry_count + 1}/{max_retries}")
+                debug_log_file(
+                    f"[OpenAI TTS] API call attempt {retry_count + 1}/{max_retries}"
+                )
                 if instructions:
                     response = self.client.audio.speech.create(
                         voice=self.voice,  # type: ignore
@@ -228,17 +268,17 @@ class OpenAITTSProvider(TTSProvider):
             except openai.APITimeoutError as e:
                 retry_count += 1
                 debug_log_file(f"[OpenAI TTS] Timeout error: {e}")
-                wait_time = min(2 ** retry_count, 30)
+                wait_time = min(2**retry_count, 30)
                 time.sleep(wait_time)
             except openai.RateLimitError as e:
                 retry_count += 1
                 debug_log_file(f"[OpenAI TTS] Rate limit error: {e}")
-                wait_time = min(2 ** retry_count, 30)
+                wait_time = min(2**retry_count, 30)
                 time.sleep(wait_time)
             except openai.APIConnectionError as e:
                 retry_count += 1
                 debug_log_file(f"[OpenAI TTS] Connection error: {e}")
-                wait_time = min(2 ** retry_count, 30)
+                wait_time = min(2**retry_count, 30)
                 time.sleep(wait_time)
             except openai.BadRequestError as e:
                 debug_log_file(f"[OpenAI TTS] Bad request error: {e}")
@@ -246,35 +286,60 @@ class OpenAITTSProvider(TTSProvider):
             except Exception as e:
                 debug_log_file(f"[OpenAI TTS] Unexpected error: {e}")
                 return None
-        
+
         if response is None:
             debug_log_file(f"[OpenAI TTS] Failed after {max_retries} attempts")
             return None
-        
+
         with open(out_file, "wb") as file:
             file.write(response.content)
-        
-        debug_log_file(f"[OpenAI TTS] Audio written to {out_file} ({len(response.content)} bytes)")
+
+        debug_log_file(
+            f"[OpenAI TTS] Audio written to {out_file} ({len(response.content)} bytes)"
+        )
         return out_file
 
 
 GEMINI_VOICES = [
-    'Zephyr', 'Puck', 'Charon', 'Kore', 'Fenrir',
-    'Aoede', 'Leda', 'Orus', 'Achernar', 'Achird',
-    'Algenib', 'Algieba', 'Alnilam', 'Autonoe', 'Callirrhoe',
-    'Despina', 'Enceladus', 'Erinome', 'Gacrux', 'Iapetus',
-    'Laomedeia', 'Pulcherrima', 'Rasalgethi', 'Sadachbia',
-    'Sadaltager', 'Schedar', 'Sulafat', 'Umbriel',
-    'Vindemiatrix', 'Zubenelgenubi',
+    "Zephyr",
+    "Puck",
+    "Charon",
+    "Kore",
+    "Fenrir",
+    "Aoede",
+    "Leda",
+    "Orus",
+    "Achernar",
+    "Achird",
+    "Algenib",
+    "Algieba",
+    "Alnilam",
+    "Autonoe",
+    "Callirrhoe",
+    "Despina",
+    "Enceladus",
+    "Erinome",
+    "Gacrux",
+    "Iapetus",
+    "Laomedeia",
+    "Pulcherrima",
+    "Rasalgethi",
+    "Sadachbia",
+    "Sadaltager",
+    "Schedar",
+    "Sulafat",
+    "Umbriel",
+    "Vindemiatrix",
+    "Zubenelgenubi",
 ]
 
-GEMINI_MODELS = ['gemini-2.5-flash-preview-tts', 'gemini-2.5-pro-preview-tts']
+GEMINI_MODELS = ["gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts"]
 
 
 class GeminiTTSProvider(TTSProvider):
     def __init__(
         self,
-        voice: str = "Kore",
+        voice: str = "Leda",
         model: str = "gemini-2.5-flash-preview-tts",
         response_format: str = "mp3",
         instructions: Optional[str] = None,
@@ -289,41 +354,47 @@ class GeminiTTSProvider(TTSProvider):
                 "Install with: pip install google-genai"
             )
 
-        super().__init__(voice, model, "wav", instructions, refresh_cache=refresh_cache, **kwargs)
+        super().__init__(
+            voice, model, "wav", instructions, refresh_cache=refresh_cache, **kwargs
+        )
         self.requested_format = response_format
         self.timeout = timeout
 
-        self.api_key = api_key or os.getenv('GEMINI_API_KEY')
+        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY is not set")
 
         self.client = genai.Client(
             api_key=self.api_key,
-            http_options={'timeout': self.timeout * 1000},  # timeout in ms
+            http_options={"timeout": self.timeout * 1000},  # timeout in ms
         )
         self.rate_limiter = RateLimiter(requests_per_minute=60)
-    
+
     @property
     def provider_name(self) -> str:
         return "gemini"
-    
+
     def _generate_audio(self, text: str, out_file: Path) -> Optional[Path]:
         raw_text = "" if text is None else str(text)
         if not raw_text.strip():
             return None
-        
-        debug_log_file(f"[Gemini TTS] Starting generation for text: {raw_text[:100]}...")
+
+        debug_log_file(
+            f"[Gemini TTS] Starting generation for text: {raw_text[:100]}..."
+        )
         debug_log_file(f"[Gemini TTS] Model: {self.model}, Voice: {self.voice}")
-        
+
         self.rate_limiter.wait_if_needed()
-        
+
         retry_count = 0
         max_retries = 3
         response = None
-        
+
         while retry_count < max_retries:
             try:
-                debug_log_file(f"[Gemini TTS] API call attempt {retry_count + 1}/{max_retries}")
+                debug_log_file(
+                    f"[Gemini TTS] API call attempt {retry_count + 1}/{max_retries}"
+                )
                 if self.instructions:
                     tts_prompt = f"{self.instructions}\n\nRead aloud the following text:\n\n{raw_text}"
                 else:
@@ -335,11 +406,9 @@ class GeminiTTSProvider(TTSProvider):
                         "response_modalities": ["AUDIO"],
                         "speech_config": {
                             "voice_config": {
-                                "prebuilt_voice_config": {
-                                    "voice_name": self.voice
-                                }
+                                "prebuilt_voice_config": {"voice_name": self.voice}
                             }
-                        }
+                        },
                     },
                 )
                 debug_log_file(f"[Gemini TTS] API call successful")
@@ -347,75 +416,130 @@ class GeminiTTSProvider(TTSProvider):
             except Exception as e:
                 retry_count += 1
                 debug_log_file(f"[Gemini TTS] API error: {e}")
+                debug_log_file(
+                    f"[Gemini TTS] Text that caused error (len={len(raw_text)}): {repr(raw_text)}"
+                )
                 if retry_count >= max_retries:
-                    debug_log_file(f"[Gemini TTS] Failed after {max_retries} attempts: {e}")
+                    debug_log_file(
+                        f"[Gemini TTS] Failed after {max_retries} attempts: {e}"
+                    )
+                    debug_log_file(
+                        f"[Gemini TTS] FULL PROMPT SENT:\n{tts_prompt}\n--- END PROMPT ---"
+                    )
                     return None
-                wait_time = min(2 ** retry_count, 30)
-                debug_log_file(f"[Gemini TTS] Retrying in {wait_time}s (attempt {retry_count}/{max_retries})")
+                wait_time = min(2**retry_count, 30)
+                debug_log_file(
+                    f"[Gemini TTS] Retrying in {wait_time}s (attempt {retry_count}/{max_retries})"
+                )
                 time.sleep(wait_time)
-        
+
         if response is None:
             return None
-        
+
         try:
             audio_data = None
             mime_type = None
-            if hasattr(response, 'candidates') and response.candidates:
-                debug_log_file(f"[Gemini TTS] Response has {len(response.candidates)} candidates")
+            if hasattr(response, "candidates") and response.candidates:
+                debug_log_file(
+                    f"[Gemini TTS] Response has {len(response.candidates)} candidates"
+                )
                 for candidate in response.candidates:
-                    if hasattr(candidate, 'content') and candidate.content:
-                        if hasattr(candidate.content, 'parts') and candidate.content.parts:
-                            debug_log_file(f"[Gemini TTS] Content has {len(candidate.content.parts)} parts")
+                    if hasattr(candidate, "content") and candidate.content:
+                        if (
+                            hasattr(candidate.content, "parts")
+                            and candidate.content.parts
+                        ):
+                            debug_log_file(
+                                f"[Gemini TTS] Content has {len(candidate.content.parts)} parts"
+                            )
                             for part in candidate.content.parts:
-                                if hasattr(part, 'inline_data') and part.inline_data:
+                                if hasattr(part, "inline_data") and part.inline_data:
                                     audio_data = part.inline_data.data
-                                    mime_type = getattr(part.inline_data, 'mime_type', 'unknown')
-                                    debug_log_file(f"[Gemini TTS] Found inline_data, mime_type: {mime_type}")
-                                    debug_log_file(f"[Gemini TTS] Data type: {type(audio_data).__name__}, len: {len(audio_data) if audio_data else 0}")
+                                    mime_type = getattr(
+                                        part.inline_data, "mime_type", "unknown"
+                                    )
+                                    debug_log_file(
+                                        f"[Gemini TTS] Found inline_data, mime_type: {mime_type}"
+                                    )
+                                    debug_log_file(
+                                        f"[Gemini TTS] Data type: {type(audio_data).__name__}, len: {len(audio_data) if audio_data else 0}"
+                                    )
                                     break
                     if audio_data:
                         break
-            
+
             if not audio_data:
                 debug_log_file("[Gemini TTS] No audio data found in response")
                 return None
-            
-            # Gemini ALWAYS returns base64-encoded PCM data (as str or bytes)
-            # Even when type is bytes, it contains ASCII base64 characters, not raw PCM
-            debug_log_file(f"[Gemini TTS] Decoding base64 data (type={type(audio_data).__name__}, len={len(audio_data)})")
-            debug_log_file(f"[Gemini TTS] First 50 bytes: {audio_data[:50] if audio_data else 'None'}")
-            pcm_data = base64.b64decode(audio_data)
-            
+
+            # google-genai >= 1.x returns raw PCM bytes directly
+            # older versions returned base64-encoded strings
+            debug_log_file(
+                f"[Gemini TTS] Processing audio data (type={type(audio_data).__name__}, len={len(audio_data)})"
+            )
+            debug_log_file(
+                f"[Gemini TTS] First 50 bytes: {audio_data[:50] if audio_data else 'None'}"
+            )
+
+            if isinstance(audio_data, str):
+                # Old behavior: base64-encoded string
+                debug_log_file("[Gemini TTS] Decoding base64 string")
+                pcm_data = base64.b64decode(audio_data)
+            elif isinstance(audio_data, bytes):
+                # Check if it looks like base64 (ASCII printable) or raw PCM (binary with nulls)
+                # Base64 only contains A-Z, a-z, 0-9, +, /, = (all >= 0x2B)
+                # Raw PCM audio typically has many null bytes and values across full byte range
+                sample = audio_data[:100]
+                is_likely_base64 = all(
+                    0x2B <= b <= 0x7A or b == 0x3D
+                    for b in sample
+                    if b != 0x0A and b != 0x0D
+                )
+
+                if is_likely_base64 and b"\x00" not in sample:
+                    debug_log_file(
+                        "[Gemini TTS] Detected base64-encoded bytes, decoding"
+                    )
+                    pcm_data = base64.b64decode(audio_data)
+                else:
+                    debug_log_file(
+                        "[Gemini TTS] Detected raw PCM bytes, using directly"
+                    )
+                    pcm_data = audio_data
+            else:
+                debug_log_file(f"[Gemini TTS] Unexpected data type: {type(audio_data)}")
+                return None
+
             debug_log_file(f"[Gemini TTS] PCM data size: {len(pcm_data)} bytes")
             self._write_wav(pcm_data, out_file, sample_rate=24000)
             debug_log_file(f"[Gemini TTS] WAV written to {out_file}")
             return out_file
-            
+
         except Exception as e:
             debug_log_file(f"[Gemini TTS] Error extracting audio: {e}")
             return None
-    
+
     def _write_wav(self, pcm_data: bytes, out_file: Path, sample_rate: int = 24000):
         num_channels = 1
         bits_per_sample = 16
         byte_rate = sample_rate * num_channels * bits_per_sample // 8
         block_align = num_channels * bits_per_sample // 8
         data_size = len(pcm_data)
-        
-        with open(out_file, 'wb') as f:
-            f.write(b'RIFF')
-            f.write(struct.pack('<I', 36 + data_size))
-            f.write(b'WAVE')
-            f.write(b'fmt ')
-            f.write(struct.pack('<I', 16))
-            f.write(struct.pack('<H', 1))
-            f.write(struct.pack('<H', num_channels))
-            f.write(struct.pack('<I', sample_rate))
-            f.write(struct.pack('<I', byte_rate))
-            f.write(struct.pack('<H', block_align))
-            f.write(struct.pack('<H', bits_per_sample))
-            f.write(b'data')
-            f.write(struct.pack('<I', data_size))
+
+        with open(out_file, "wb") as f:
+            f.write(b"RIFF")
+            f.write(struct.pack("<I", 36 + data_size))
+            f.write(b"WAVE")
+            f.write(b"fmt ")
+            f.write(struct.pack("<I", 16))
+            f.write(struct.pack("<H", 1))
+            f.write(struct.pack("<H", num_channels))
+            f.write(struct.pack("<I", sample_rate))
+            f.write(struct.pack("<I", byte_rate))
+            f.write(struct.pack("<H", block_align))
+            f.write(struct.pack("<H", bits_per_sample))
+            f.write(b"data")
+            f.write(struct.pack("<I", data_size))
             f.write(pcm_data)
 
 
@@ -429,7 +553,7 @@ def create_tts_provider(
     **kwargs,
 ) -> TTSProvider:
     provider = provider.lower()
-    
+
     if provider == "openai":
         return OpenAITTSProvider(
             voice=voice or "verse",
@@ -441,7 +565,7 @@ def create_tts_provider(
         )
     elif provider == "gemini":
         return GeminiTTSProvider(
-            voice=voice or "Kore",
+            voice=voice or "Leda",
             model=model or "gemini-2.5-flash-preview-tts",
             response_format=response_format,
             instructions=instructions,
